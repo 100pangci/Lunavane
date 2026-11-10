@@ -142,4 +142,6 @@ Manifest 声明的权限：
 
 ## 许可证
 
-本仓库当前没有为 Lunavane 自有 Kotlin、Java、C++ 桥接和界面代码声明项目级许可证。公开可见不等于授予复制、修改或再分发许可。ZeroTier Core 及第三方依赖按各自许可证使用；版权、许可证文本和依赖说明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 及 `app/src/main/cpp/zerotier/` 下的文件。分发或修改第三方源码时请遵守对应许可证。
+Lunavane 自行编写的实现代码、Android 资源和项目构建配置采用 Mozilla Public License 2.0（MPL-2.0），完整文本见 [`LICENSE`](LICENSE)。该许可证不适用于 vendored `app/src/main/cpp/zerotier/` 源码或 Gradle Wrapper 文件，也不会更改任何第三方文件原有的许可条件。
+
+ZeroTier Core、其依赖和 Gradle Wrapper 须遵守各自随附的许可证。归属与许可摘要见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 及各组件的许可证文件；分发或修改第三方代码时请保留其版权和许可声明。
