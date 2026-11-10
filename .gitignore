@@ -1,0 +1,43 @@
+.gradle/
+**/build/
+
+# Android Studio and local machine files
+.idea/
+*.iml
+local.properties
+.cxx/
+.externalNativeBuild/
+.kotlin/
+captures/
+
+# Local signing credentials and secrets
+*.jks
+*.keystore
+*.p12
+*.pfx
+key.properties
+keystore.properties
+signing.properties
+secrets.properties
+.env
+.env.*
+!.env.example
+
+# Keep only the canonical Gradle wrapper at gradle/wrapper/
+/gradle/gradle/
+
+# Generated Android packages and debug output
+*.apk
+*.aab
+*.ap_
+*.log
+*.hprof
+hs_err_pid*
+
+# Private key files
+*.pem
+*.key
+
+# Operating system files
+.DS_Store
+Thumbs.db
