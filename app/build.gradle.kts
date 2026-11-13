@@ -4,17 +4,24 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val gitCommitCount = runCatching {
+    providers.exec {
+        commandLine("git", "rev-list", "--count", "HEAD")
+        workingDir = rootDir
+    }.standardOutput.asText.get().trim().toInt()
+}.getOrDefault(0).coerceAtLeast(1)
+
 android {
-    namespace = "dev.nova.zerotier"
+    namespace = "nova.lunavane"
     compileSdk = 36
     ndkVersion = "28.0.13004108"
 
     defaultConfig {
-        applicationId = "dev.nova.zerotier"
+        applicationId = "nova.lunavane"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = gitCommitCount
+        versionName = gitCommitCount.toString()
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -29,6 +36,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+        }
         release {
             isMinifyEnabled = false
         }
@@ -43,6 +53,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {
@@ -59,6 +70,7 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.09.01"))
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.compose.material3:material3:1.4.0")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")

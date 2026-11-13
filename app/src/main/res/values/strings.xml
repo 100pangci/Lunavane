@@ -1,0 +1,279 @@
+<resources>
+    <string name="app_name">Lunavane</string>
+
+    <!-- Navigation and common actions -->
+    <string name="nav_home">Home</string>
+    <string name="nav_networks">Network</string>
+    <string name="nav_moon">Moon</string>
+    <string name="nav_diagnostics">Diagnostics</string>
+    <string name="action_settings">Settings</string>
+    <string name="action_back">Back</string>
+    <string name="action_connect">Connect</string>
+    <string name="action_disconnect">Disconnect</string>
+    <string name="action_add_network">Add network</string>
+    <string name="action_open_diagnostics">View diagnostics</string>
+    <string name="action_orbit">Orbit</string>
+    <string name="action_deorbit">Deorbit</string>
+    <string name="action_clear_logs">Clear logs</string>
+    <string name="value_unavailable">—</string>
+    <string name="value_unknown">Unknown</string>
+    <string name="unit_milliseconds">%1$d ms</string>
+
+    <!-- Home -->
+    <string name="home_no_network">No network configured</string>
+    <string name="home_current_network">Current network · %1$s</string>
+    <string name="home_status_disconnected">Not connected</string>
+    <string name="home_desc_disconnected">Tap the power button to connect to your ZeroTier network.</string>
+    <string name="home_status_connecting">Connecting</string>
+    <string name="home_desc_connecting">Starting the ZeroTier node and joining the network.</string>
+    <string name="home_status_waiting">Waiting for authorization</string>
+    <string name="home_desc_waiting">The node joined the network. Authorize it in your ZeroTier controller.</string>
+    <string name="home_status_connected">Connected</string>
+    <string name="home_desc_connected">The ZeroTier network is connected.</string>
+    <string name="home_status_switching">Switching networks</string>
+    <string name="home_desc_switching">Switching to a new underlying network.</string>
+    <string name="home_status_recovering">Recovering</string>
+    <string name="home_desc_recovering">Recovering the ZeroTier UDP transport.</string>
+    <string name="home_status_recovery_failed">Recovery failed</string>
+    <string name="home_desc_recovery_failed">Automatic transport recovery stopped. Switch networks or reconnect.</string>
+    <string name="home_status_error">Connection error</string>
+    <string name="home_desc_error">Something went wrong. Review diagnostics or try again.</string>
+    <string name="home_add_network_title">No ZeroTier network yet</string>
+    <string name="home_add_network_body">Add a 16-character network ID to connect.</string>
+    <string name="home_waiting_authorization_hint">If the network requires approval, authorize this node in the ZeroTier controller.</string>
+    <string name="home_waiting_authorization_hint_node">If the network requires approval, authorize node %1$s in the ZeroTier controller.</string>
+    <string name="home_permission_denied">VPN permission is required to connect. Tap the power button to try again.</string>
+    <string name="home_error_hint">Check diagnostics for details, then retry or reconnect.</string>
+    <string name="home_connection_details">Connection details</string>
+    <string name="home_metric_network">Network</string>
+    <string name="home_metric_ip">Virtual IP</string>
+    <string name="home_metric_peers">Peers discovered</string>
+    <string name="home_metric_underlay">Underlying network</string>
+    <string name="home_metric_recovery">Transport recovery</string>
+
+    <!-- Node, network, transport states -->
+    <string name="node_state_idle">Idle</string>
+    <string name="node_state_starting">Starting</string>
+    <string name="node_state_ready">Ready</string>
+    <string name="node_state_failed">Failed</string>
+    <string name="network_state_idle">Not joined</string>
+    <string name="network_state_joining">Joining</string>
+    <string name="network_state_authorized">Authorized</string>
+    <string name="network_state_pending">Pending authorization</string>
+    <string name="network_state_access_denied">Access denied</string>
+    <string name="network_state_not_found">Network not found</string>
+    <string name="network_state_port_error">Port error</string>
+    <string name="network_state_client_too_old">Client too old</string>
+    <string name="network_state_auth_required">Authentication required</string>
+    <string name="network_state_join_failed">Join request failed</string>
+    <string name="network_state_left">Left</string>
+    <string name="network_state_config_error">Configuration error</string>
+    <string name="recovery_waiting_for_network">Waiting for a physical network</string>
+    <string name="recovery_switching">Switching underlying network</string>
+    <string name="recovery_recovering">Recovering UDP transport</string>
+    <string name="recovery_retry_wait">Retry scheduled</string>
+    <string name="recovery_ready">Ready</string>
+    <string name="recovery_exhausted">Recovery exhausted</string>
+    <string name="recovery_stopped">Stopped</string>
+    <string name="underlay_wifi">Wi-Fi</string>
+    <string name="underlay_cellular">Cellular</string>
+    <string name="underlay_ethernet">Ethernet</string>
+    <string name="underlay_vpn">VPN</string>
+    <string name="underlay_other">Other</string>
+
+    <!-- Network screen -->
+    <string name="networks_connect_title">Connect network</string>
+    <string name="networks_network_id_label">ZeroTier Network ID</string>
+    <string name="networks_network_id_hint">16 hexadecimal characters</string>
+    <string name="networks_network_id_example" translatable="false">8056c2e21c000001</string>
+    <string name="networks_network_id_locked">Disconnect before changing the network ID.</string>
+    <string name="networks_connecting">Connecting…</string>
+    <string name="networks_details_title">Network details</string>
+    <string name="networks_details_empty">Connect to a network to see its configuration.</string>
+    <string name="networks_name">Name</string>
+    <string name="networks_network_id">Network ID</string>
+    <string name="networks_node_id">Node ID</string>
+    <string name="networks_ipv4">IPv4</string>
+    <string name="networks_ipv6">IPv6</string>
+    <string name="networks_authorization">Authorization</string>
+    <string name="networks_routes">Managed routes</string>
+    <string name="networks_no_routes">No managed routes</string>
+    <string name="networks_dns">DNS</string>
+    <string name="networks_search_domain">Search domain</string>
+    <string name="networks_peers_title">Peers</string>
+    <string name="networks_peers_not_connected">Connect to view peers.</string>
+    <string name="networks_peers_pending">Peer visibility pending.</string>
+    <string name="networks_peers_empty">No peers visible.</string>
+    <string name="networks_peer_details_title">Peer details</string>
+    <string name="networks_peer_id">Peer ID</string>
+    <string name="networks_peer_role">Role</string>
+    <string name="networks_peer_latency">Latency</string>
+    <string name="networks_peer_version">Version</string>
+    <string name="networks_peer_version_value">v%1$s</string>
+    <string name="networks_peer_bonded">Bonded links</string>
+    <string name="networks_peer_bonded_value">%1$d / %2$d links</string>
+    <string name="networks_peer_bonded_unknown">Bonded</string>
+    <string name="networks_peer_paths">Paths</string>
+    <string name="networks_peer_paths_title">Connection paths</string>
+    <string name="networks_peer_no_paths">No paths available.</string>
+    <string name="networks_peer_summary">%1$s · %2$s</string>
+    <string name="networks_peer_path_preferred">Preferred</string>
+    <string name="networks_peer_path_active">Active</string>
+    <string name="networks_peer_path_idle">Idle</string>
+
+    <!-- Moon screen -->
+    <string name="moon_orbit_title">Orbit a Moon</string>
+    <string name="moon_intro">Orbit a Moon with its world ID and one of its seed node addresses.</string>
+    <string name="moon_world_id_label">Moon world ID</string>
+    <string name="moon_world_id_hint">16 hexadecimal characters</string>
+    <string name="moon_seed_label">Seed node address</string>
+    <string name="moon_seed_hint">10 hexadecimal characters</string>
+    <string name="moon_unavailable">Connect and wait for the ZeroTier node before managing Moons.</string>
+    <string name="moon_last_operation">Last Moon operation</string>
+    <string name="moon_result_accepted">Accepted</string>
+    <string name="moon_result_attention">Attention</string>
+    <string name="moon_result_info">Info</string>
+    <string name="moon_world_id_short">World ID</string>
+    <string name="moon_seed_short">Seed</string>
+    <string name="moon_status_legend_title">Status meanings</string>
+    <string name="moon_status_orbit">Orbit request</string>
+    <string name="moon_status_orbit_desc">Whether the Core accepted the call and whether the request was saved locally.</string>
+    <string name="moon_status_seed">Seed peer visibility</string>
+    <string name="moon_status_seed_desc">Only means the seed address appears in the peer list. It does not prove the Moon definition was loaded.</string>
+    <string name="moon_status_definition">Moon definition</string>
+    <string name="moon_status_definition_desc">The Core API does not confirm which Moon definition is loaded, so this status stays pending.</string>
+    <string name="moon_saved_title">Saved Moons</string>
+    <string name="moon_saved_empty">No saved Moon orbit requests.</string>
+    <string name="moon_seed_visibility_pending">Pending</string>
+    <string name="moon_seed_visibility_visible">Visible</string>
+    <string name="moon_seed_visibility_not_visible">Not visible</string>
+    <string name="moon_seed_status_pending">Seed peer: visibility pending</string>
+    <string name="moon_seed_status_not_visible">Seed peer: not currently visible</string>
+    <string name="moon_seed_status_visible">Seed peer: %1$s · %2$s · %3$s</string>
+    <string name="moon_saved_request">Orbit request</string>
+    <string name="moon_saved_request_value">Saved locally</string>
+    <string name="moon_definition_pending">Pending confirmation</string>
+    <string name="moon_deorbit_unavailable">Connect the ZeroTier node before deorbiting.</string>
+    <string name="moon_orbit_accepted">Orbit request accepted by the Core and saved locally.</string>
+    <string name="moon_orbit_accepted_not_saved">The Core accepted the orbit request, but saving it locally failed. It will be lost after restart.</string>
+    <string name="moon_orbit_rejected">The Core rejected the orbit request (code %1$d).</string>
+    <string name="moon_orbit_unavailable">Connect the ZeroTier node before orbiting a Moon.</string>
+    <string name="moon_orbit_invalid">Enter a valid 16-character Moon ID and a non-zero 10-character seed address.</string>
+    <string name="moon_deorbit_accepted">Deorbit accepted. The Core Moon file is gone and the saved record was removed.</string>
+    <string name="moon_deorbit_file_remains">Deorbit accepted, but the Moon file is still present. The saved record was kept.</string>
+    <string name="moon_deorbit_status_unknown">Deorbit accepted, but the Moon file status could not be checked. The saved record was kept.</string>
+    <string name="moon_deorbit_record_failed">Deorbit accepted and the Moon file is gone, but removing the saved record failed.</string>
+    <string name="moon_deorbit_rejected">The Core rejected the deorbit request (code %1$d).</string>
+    <string name="moon_deorbit_invalid">Enter a valid 16-character Moon ID.</string>
+    <string name="moon_restored_partial">Restored %1$d of %2$d saved requests.</string>
+    <string name="moon_operation_unknown">The Moon operation finished without a recognized result.</string>
+
+    <!-- Diagnostics -->
+    <string name="diagnostics_runtime_title">Runtime status</string>
+    <string name="diagnostics_connection">Connection status</string>
+    <string name="diagnostics_node">Node state</string>
+    <string name="diagnostics_network">Virtual network</string>
+    <string name="diagnostics_udp">UDP transport</string>
+    <string name="diagnostics_recovery">Recovery phase</string>
+    <string name="diagnostics_underlay">Underlying network</string>
+    <string name="diagnostics_peers">Peers</string>
+    <string name="diagnostics_peers_value">%1$d visible · %2$d with active paths</string>
+    <string name="diagnostics_peers_pending">Not queried</string>
+    <string name="diagnostics_network_id">Network ID</string>
+    <string name="diagnostics_node_id">Node ID</string>
+    <string name="diagnostics_service_status">Service status</string>
+    <string name="diagnostics_service_state">Status</string>
+    <string name="diagnostics_service_detail">Detail</string>
+    <string name="diagnostics_last_error">Last error</string>
+    <string name="diagnostics_udp_stopped">Stopped</string>
+    <string name="diagnostics_udp_ready">Ready</string>
+    <string name="diagnostics_udp_recovering">Recovering</string>
+    <string name="diagnostics_udp_waiting">Waiting for a physical network</string>
+    <string name="diagnostics_udp_failed">Recovery exhausted</string>
+    <string name="diagnostics_logs">Event log</string>
+    <string name="diagnostics_logs_empty">No recent events.</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_theme_system">Follow system</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_dynamic_color">Dynamic color</string>
+    <string name="settings_dynamic_color_desc">Use colors from your wallpaper (Android 12 and later).</string>
+    <string name="settings_dynamic_color_unsupported">Requires Android 12 or later.</string>
+    <string name="settings_about">About</string>
+    <string name="settings_version">App version</string>
+    <string name="settings_about_project">About project</string>
+    <string name="settings_github">GitHub repository</string>
+    <string name="settings_licenses">Open-source licenses</string>
+    <string name="settings_unofficial_title">Unofficial ZeroTier client</string>
+    <string name="settings_unofficial_body">Lunavane is an independent project and is not affiliated with, sponsored by, or officially supported by ZeroTier, Inc. ZeroTier and related marks belong to their respective owners.</string>
+
+    <!-- About and licenses -->
+    <string name="about_title">About Lunavane</string>
+    <string name="about_version">Version %1$s</string>
+    <string name="about_project_title">About the project</string>
+    <string name="about_body">Lunavane is a native Android ZeroTier client built with the official ZeroTier One Core, Android VpnService, Kotlin, and Jetpack Compose.</string>
+    <string name="about_license_body">Lunavane application code and resources are licensed under MPL-2.0.</string>
+    <string name="licenses_title">Open-source licenses</string>
+    <string name="licenses_intro">Lunavane uses the following third-party components. Full license texts are included in the repository notices.</string>
+    <string name="licenses_components_title">Components</string>
+    <string name="licenses_full_notices">View full third-party notices</string>
+    <string name="license_mpl">MPL-2.0</string>
+    <string name="license_mit">MIT</string>
+    <string name="license_bsd2">BSD 2-Clause</string>
+    <string name="license_apache">Apache-2.0</string>
+    <string name="component_lunavane">Lunavane application</string>
+    <string name="component_zerotier">ZeroTier One Core 1.16.2</string>
+    <string name="component_nlohmann">nlohmann/json</string>
+    <string name="component_prometheus">prometheus-cpp-lite</string>
+    <string name="component_lz4">LZ4 (embedded in ZeroTier Core)</string>
+    <string name="component_androidx">AndroidX, Jetpack Compose, Kotlin Coroutines</string>
+    <string name="project_github_url" translatable="false">https://github.com/100pangci/Lunavane</string>
+    <string name="third_party_notices_url" translatable="false">https://github.com/100pangci/Lunavane/blob/main/THIRD_PARTY_NOTICES.md</string>
+
+    <!-- Notification -->
+    <string name="notification_channel_name">ZeroTier tunnel</string>
+    <string name="notification_starting">Starting ZeroTier node</string>
+    <string name="notification_requesting_config">Requesting network configuration</string>
+    <string name="notification_connected">Connected</string>
+    <string name="notification_disconnected">Disconnected</string>
+    <string name="notification_degraded">Transport degraded</string>
+    <string name="notification_reconnecting">Reconnecting</string>
+    <string name="notification_offline">Offline</string>
+    <string name="notification_online">Online</string>
+    <string name="notification_failed">Connection failed</string>
+    <string name="notification_configuration_error">Configuration error</string>
+    <string name="notification_tunnel_error">Tunnel error</string>
+    <string name="notification_access_denied">Access denied</string>
+    <string name="notification_not_found">Network not found</string>
+    <string name="notification_port_error">Port error</string>
+    <string name="notification_client_too_old">Client too old</string>
+    <string name="notification_auth_required">Authentication required</string>
+    <string name="notification_pending">Waiting for authorization</string>
+    <string name="notification_node_event">ZeroTier node event</string>
+    <string name="notification_unknown">Tunnel active</string>
+
+    <!-- Plurals -->
+    <plurals name="peers_count">
+        <item quantity="one">%1$d peer</item>
+        <item quantity="other">%1$d peers</item>
+    </plurals>
+    <plurals name="paths_count">
+        <item quantity="one">%1$d path</item>
+        <item quantity="other">%1$d paths</item>
+    </plurals>
+    <plurals name="log_entry_count">
+        <item quantity="one">%1$d entry</item>
+        <item quantity="other">%1$d entries</item>
+    </plurals>
+    <plurals name="moon_saved_requests">
+        <item quantity="one">%1$d saved request</item>
+        <item quantity="other">%1$d saved requests</item>
+    </plurals>
+    <plurals name="moon_restored">
+        <item quantity="one">Restored %1$d saved Moon orbit request.</item>
+        <item quantity="other">Restored %1$d saved Moon orbit requests.</item>
+    </plurals>
+</resources>

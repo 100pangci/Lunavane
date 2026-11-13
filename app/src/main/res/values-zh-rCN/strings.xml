@@ -1,0 +1,271 @@
+<resources>
+    <string name="app_name">Lunavane</string>
+
+    <!-- 导航与通用操作 -->
+    <string name="nav_home">首页</string>
+    <string name="nav_networks">网络</string>
+    <string name="nav_moon">Moon</string>
+    <string name="nav_diagnostics">诊断</string>
+    <string name="action_settings">设置</string>
+    <string name="action_back">返回</string>
+    <string name="action_connect">连接</string>
+    <string name="action_disconnect">断开连接</string>
+    <string name="action_add_network">添加网络</string>
+    <string name="action_open_diagnostics">查看诊断</string>
+    <string name="action_orbit">Orbit</string>
+    <string name="action_deorbit">Deorbit</string>
+    <string name="action_clear_logs">清空日志</string>
+    <string name="value_unavailable">—</string>
+    <string name="value_unknown">未知</string>
+    <string name="unit_milliseconds">%1$d ms</string>
+
+    <!-- 首页 -->
+    <string name="home_no_network">尚未配置网络</string>
+    <string name="home_current_network">当前网络 · %1$s</string>
+    <string name="home_status_disconnected">未连接</string>
+    <string name="home_desc_disconnected">点击电源按钮连接 ZeroTier 网络。</string>
+    <string name="home_status_connecting">正在连接</string>
+    <string name="home_desc_connecting">正在启动 ZeroTier 节点并加入网络。</string>
+    <string name="home_status_waiting">等待授权</string>
+    <string name="home_desc_waiting">节点已加入网络，请在 ZeroTier 控制器中授权。</string>
+    <string name="home_status_connected">已连接</string>
+    <string name="home_desc_connected">ZeroTier 网络已连接。</string>
+    <string name="home_status_switching">网络正在切换</string>
+    <string name="home_desc_switching">正在切换到新的底层网络。</string>
+    <string name="home_status_recovering">正在恢复</string>
+    <string name="home_desc_recovering">正在恢复 ZeroTier UDP 传输。</string>
+    <string name="home_status_recovery_failed">恢复失败</string>
+    <string name="home_desc_recovery_failed">自动传输恢复已停止，请切换网络或重新连接。</string>
+    <string name="home_status_error">连接错误</string>
+    <string name="home_desc_error">连接出现问题，请查看诊断或重试。</string>
+    <string name="home_add_network_title">尚未添加 ZeroTier 网络</string>
+    <string name="home_add_network_body">添加 16 位网络 ID 后即可连接。</string>
+    <string name="home_waiting_authorization_hint">若网络需要审批，请在 ZeroTier 控制器中授权此节点。</string>
+    <string name="home_waiting_authorization_hint_node">若网络需要审批，请在 ZeroTier 控制器中授权节点 %1$s。</string>
+    <string name="home_permission_denied">连接需要 VPN 授权。请再次点击电源按钮重试。</string>
+    <string name="home_error_hint">查看诊断了解详情，然后重试或重新连接。</string>
+    <string name="home_connection_details">连接详情</string>
+    <string name="home_metric_network">网络</string>
+    <string name="home_metric_ip">虚拟 IP</string>
+    <string name="home_metric_peers">已发现 Peer</string>
+    <string name="home_metric_underlay">底层网络</string>
+    <string name="home_metric_recovery">传输恢复</string>
+
+    <!-- 节点、网络与传输状态 -->
+    <string name="node_state_idle">空闲</string>
+    <string name="node_state_starting">正在启动</string>
+    <string name="node_state_ready">就绪</string>
+    <string name="node_state_failed">失败</string>
+    <string name="network_state_idle">未加入</string>
+    <string name="network_state_joining">正在加入</string>
+    <string name="network_state_authorized">已授权</string>
+    <string name="network_state_pending">等待授权</string>
+    <string name="network_state_access_denied">访问被拒绝</string>
+    <string name="network_state_not_found">网络不存在</string>
+    <string name="network_state_port_error">端口错误</string>
+    <string name="network_state_client_too_old">客户端版本过旧</string>
+    <string name="network_state_auth_required">需要身份验证</string>
+    <string name="network_state_join_failed">加入请求失败</string>
+    <string name="network_state_left">已离开</string>
+    <string name="network_state_config_error">配置错误</string>
+    <string name="recovery_waiting_for_network">等待物理网络</string>
+    <string name="recovery_switching">正在切换底层网络</string>
+    <string name="recovery_recovering">正在恢复 UDP 传输</string>
+    <string name="recovery_retry_wait">已安排重试</string>
+    <string name="recovery_ready">就绪</string>
+    <string name="recovery_exhausted">恢复已耗尽</string>
+    <string name="recovery_stopped">已停止</string>
+    <string name="underlay_wifi">Wi-Fi</string>
+    <string name="underlay_cellular">蜂窝网络</string>
+    <string name="underlay_ethernet">以太网</string>
+    <string name="underlay_vpn">VPN</string>
+    <string name="underlay_other">其他</string>
+
+    <!-- 网络页面 -->
+    <string name="networks_connect_title">连接网络</string>
+    <string name="networks_network_id_label">ZeroTier 网络 ID</string>
+    <string name="networks_network_id_hint">16 位十六进制字符</string>
+    <string name="networks_network_id_locked">断开连接后才能更改网络 ID。</string>
+    <string name="networks_connecting">正在连接…</string>
+    <string name="networks_details_title">网络详情</string>
+    <string name="networks_details_empty">连接网络后显示配置详情。</string>
+    <string name="networks_name">名称</string>
+    <string name="networks_network_id">网络 ID</string>
+    <string name="networks_node_id">节点 ID</string>
+    <string name="networks_ipv4">IPv4</string>
+    <string name="networks_ipv6">IPv6</string>
+    <string name="networks_authorization">授权状态</string>
+    <string name="networks_routes">受管路由</string>
+    <string name="networks_no_routes">无受管路由</string>
+    <string name="networks_dns">DNS</string>
+    <string name="networks_search_domain">搜索域</string>
+    <string name="networks_peers_title">Peer</string>
+    <string name="networks_peers_not_connected">连接后可查看 Peer。</string>
+    <string name="networks_peers_pending">正在获取 Peer 列表。</string>
+    <string name="networks_peers_empty">当前没有可见 Peer。</string>
+    <string name="networks_peer_details_title">Peer 详情</string>
+    <string name="networks_peer_id">Peer ID</string>
+    <string name="networks_peer_role">角色</string>
+    <string name="networks_peer_latency">延迟</string>
+    <string name="networks_peer_version">版本</string>
+    <string name="networks_peer_version_value">v%1$s</string>
+    <string name="networks_peer_bonded">已绑定链路</string>
+    <string name="networks_peer_bonded_value">%1$d / %2$d 条链路</string>
+    <string name="networks_peer_bonded_unknown">已绑定</string>
+    <string name="networks_peer_paths">路径</string>
+    <string name="networks_peer_paths_title">连接路径</string>
+    <string name="networks_peer_no_paths">无可用路径。</string>
+    <string name="networks_peer_summary">%1$s · %2$s</string>
+    <string name="networks_peer_path_preferred">首选</string>
+    <string name="networks_peer_path_active">活动</string>
+    <string name="networks_peer_path_idle">空闲</string>
+
+    <!-- Moon 页面 -->
+    <string name="moon_orbit_title">Orbit Moon</string>
+    <string name="moon_intro">使用 Moon world ID 与其一个 Seed 节点地址进行 Orbit。</string>
+    <string name="moon_world_id_label">Moon world ID</string>
+    <string name="moon_world_id_hint">16 位十六进制字符</string>
+    <string name="moon_seed_label">Seed 节点地址</string>
+    <string name="moon_seed_hint">10 位十六进制字符</string>
+    <string name="moon_unavailable">连接并等待 ZeroTier 节点就绪后才能管理 Moon。</string>
+    <string name="moon_last_operation">最近一次 Moon 操作</string>
+    <string name="moon_result_accepted">已接受</string>
+    <string name="moon_result_attention">需注意</string>
+    <string name="moon_result_info">提示</string>
+    <string name="moon_world_id_short">World ID</string>
+    <string name="moon_seed_short">Seed</string>
+    <string name="moon_status_legend_title">状态说明</string>
+    <string name="moon_status_orbit">Orbit 请求</string>
+    <string name="moon_status_orbit_desc">以 Core 是否接受调用以及本地是否保存成功为准。</string>
+    <string name="moon_status_seed">Seed Peer 可见性</string>
+    <string name="moon_status_seed_desc">仅表示 Peer 列表中出现该 Seed 地址，不代表 Moon 定义已加载。</string>
+    <string name="moon_status_definition">Moon 定义</string>
+    <string name="moon_status_definition_desc">Core API 无法确认加载了哪个 Moon 定义，因此该状态始终待确认。</string>
+    <string name="moon_saved_title">已保存的 Moon</string>
+    <string name="moon_saved_empty">没有已保存的 Moon Orbit 请求。</string>
+    <string name="moon_seed_visibility_pending">待确认</string>
+    <string name="moon_seed_visibility_visible">可见</string>
+    <string name="moon_seed_visibility_not_visible">不可见</string>
+    <string name="moon_seed_status_pending">Seed Peer：可见性待确认</string>
+    <string name="moon_seed_status_not_visible">Seed Peer：当前不可见</string>
+    <string name="moon_seed_status_visible">Seed Peer：%1$s · %2$s · %3$s</string>
+    <string name="moon_saved_request">Orbit 请求</string>
+    <string name="moon_saved_request_value">已保存到本机</string>
+    <string name="moon_definition_pending">状态待确认</string>
+    <string name="moon_deorbit_unavailable">连接 ZeroTier 节点后才能 Deorbit。</string>
+    <string name="moon_orbit_accepted">Orbit 请求已被 Core 接受，并已保存到本机。</string>
+    <string name="moon_orbit_accepted_not_saved">Core 已接受 Orbit 请求，但本地保存失败；重启后将丢失。</string>
+    <string name="moon_orbit_rejected">Core 拒绝了 Orbit 请求（代码 %1$d）。</string>
+    <string name="moon_orbit_unavailable">请先连接 ZeroTier 节点再 Orbit Moon。</string>
+    <string name="moon_orbit_invalid">请输入有效的 16 位 Moon ID 和非零的 10 位 Seed 地址。</string>
+    <string name="moon_deorbit_accepted">Deorbit 已接受，Core Moon 文件已移除，本地记录已删除。</string>
+    <string name="moon_deorbit_file_remains">Deorbit 已接受，但 Moon 文件仍存在；本地记录已保留。</string>
+    <string name="moon_deorbit_status_unknown">Deorbit 已接受，但无法确认 Moon 文件状态；本地记录已保留。</string>
+    <string name="moon_deorbit_record_failed">Deorbit 已接受且 Moon 文件已移除，但删除本地记录失败。</string>
+    <string name="moon_deorbit_rejected">Core 拒绝了 Deorbit 请求（代码 %1$d）。</string>
+    <string name="moon_deorbit_invalid">请输入有效的 16 位 Moon ID。</string>
+    <string name="moon_restored_partial">已恢复 %1$d / %2$d 条已保存请求。</string>
+    <string name="moon_operation_unknown">Moon 操作已结束，但结果无法识别。</string>
+
+    <!-- 诊断 -->
+    <string name="diagnostics_runtime_title">运行状态</string>
+    <string name="diagnostics_connection">连接状态</string>
+    <string name="diagnostics_node">Node 状态</string>
+    <string name="diagnostics_network">虚拟网络授权</string>
+    <string name="diagnostics_udp">UDP 传输状态</string>
+    <string name="diagnostics_recovery">当前恢复阶段</string>
+    <string name="diagnostics_underlay">底层网络</string>
+    <string name="diagnostics_peers">Peer 信息</string>
+    <string name="diagnostics_peers_value">%1$d 个可见 · %2$d 个有活动路径</string>
+    <string name="diagnostics_peers_pending">尚未查询</string>
+    <string name="diagnostics_network_id">网络 ID</string>
+    <string name="diagnostics_node_id">节点 ID</string>
+    <string name="diagnostics_service_status">服务状态</string>
+    <string name="diagnostics_service_state">状态</string>
+    <string name="diagnostics_service_detail">详情</string>
+    <string name="diagnostics_last_error">上次错误</string>
+    <string name="diagnostics_udp_stopped">已停止</string>
+    <string name="diagnostics_udp_ready">正常</string>
+    <string name="diagnostics_udp_recovering">恢复中</string>
+    <string name="diagnostics_udp_waiting">等待物理网络</string>
+    <string name="diagnostics_udp_failed">恢复已耗尽</string>
+    <string name="diagnostics_logs">事件日志</string>
+    <string name="diagnostics_logs_empty">暂无事件。</string>
+
+    <!-- 设置 -->
+    <string name="settings_title">设置</string>
+    <string name="settings_appearance">外观</string>
+    <string name="settings_theme_system">跟随系统</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_dynamic_color">动态取色</string>
+    <string name="settings_dynamic_color_desc">使用系统壁纸取色（Android 12 及以上）。</string>
+    <string name="settings_dynamic_color_unsupported">需要 Android 12 及以上系统。</string>
+    <string name="settings_about">关于</string>
+    <string name="settings_version">应用版本</string>
+    <string name="settings_about_project">关于项目</string>
+    <string name="settings_github">GitHub 仓库</string>
+    <string name="settings_licenses">第三方开源许可证</string>
+    <string name="settings_unofficial_title">ZeroTier 非官方客户端</string>
+    <string name="settings_unofficial_body">Lunavane 是独立项目，与 ZeroTier, Inc. 无隶属、赞助或官方支持关系。ZeroTier 名称及相关商标归其各自所有者所有。</string>
+
+    <!-- 关于与许可证 -->
+    <string name="about_title">关于 Lunavane</string>
+    <string name="about_version">版本 %1$s</string>
+    <string name="about_project_title">关于项目</string>
+    <string name="about_body">Lunavane 是使用官方 ZeroTier One Core、Android VpnService、Kotlin 和 Jetpack Compose 构建的原生 Android ZeroTier 客户端。</string>
+    <string name="about_license_body">Lunavane 应用代码与资源采用 MPL-2.0 许可。</string>
+    <string name="licenses_title">开源许可证</string>
+    <string name="licenses_intro">Lunavane 使用以下第三方组件，完整许可证文本见仓库中的第三方声明。</string>
+    <string name="licenses_components_title">组件</string>
+    <string name="licenses_full_notices">查看完整第三方声明</string>
+    <string name="license_mpl">MPL-2.0</string>
+    <string name="license_mit">MIT</string>
+    <string name="license_bsd2">BSD 2-Clause</string>
+    <string name="license_apache">Apache-2.0</string>
+    <string name="component_lunavane">Lunavane 应用</string>
+    <string name="component_zerotier">ZeroTier One Core 1.16.2</string>
+    <string name="component_nlohmann">nlohmann/json</string>
+    <string name="component_prometheus">prometheus-cpp-lite</string>
+    <string name="component_lz4">LZ4（内嵌于 ZeroTier Core）</string>
+    <string name="component_androidx">AndroidX、Jetpack Compose、Kotlin Coroutines</string>
+
+    <!-- 通知 -->
+    <string name="notification_channel_name">ZeroTier 隧道</string>
+    <string name="notification_starting">正在启动 ZeroTier 节点</string>
+    <string name="notification_requesting_config">正在请求网络配置</string>
+    <string name="notification_connected">已连接</string>
+    <string name="notification_disconnected">已断开</string>
+    <string name="notification_degraded">传输降级</string>
+    <string name="notification_reconnecting">正在重新连接</string>
+    <string name="notification_offline">离线</string>
+    <string name="notification_online">在线</string>
+    <string name="notification_failed">连接失败</string>
+    <string name="notification_configuration_error">配置错误</string>
+    <string name="notification_tunnel_error">隧道错误</string>
+    <string name="notification_access_denied">访问被拒绝</string>
+    <string name="notification_not_found">网络不存在</string>
+    <string name="notification_port_error">端口错误</string>
+    <string name="notification_client_too_old">客户端版本过旧</string>
+    <string name="notification_auth_required">需要身份验证</string>
+    <string name="notification_pending">等待授权</string>
+    <string name="notification_node_event">ZeroTier 节点事件</string>
+    <string name="notification_unknown">隧道运行中</string>
+
+    <!-- 复数 -->
+    <plurals name="peers_count">
+        <item quantity="other">%1$d 个 Peer</item>
+    </plurals>
+    <plurals name="paths_count">
+        <item quantity="other">%1$d 条路径</item>
+    </plurals>
+    <plurals name="log_entry_count">
+        <item quantity="other">%1$d 条</item>
+    </plurals>
+    <plurals name="moon_saved_requests">
+        <item quantity="other">%1$d 条已保存请求</item>
+    </plurals>
+    <plurals name="moon_restored">
+        <item quantity="other">已恢复 %1$d 条已保存 Moon Orbit 请求。</item>
+    </plurals>
+</resources>

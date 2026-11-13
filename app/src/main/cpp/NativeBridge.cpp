@@ -748,7 +748,7 @@ Bridge* fromHandle(jlong handle) { return reinterpret_cast<Bridge*>(handle); }
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_dev_nova_zerotier_core_NativeCore_create(JNIEnv* env, jobject, jobject callbacks, jstring directory)
+Java_nova_lunavane_core_NativeCore_create(JNIEnv* env, jobject, jobject callbacks, jstring directory)
 {
     const char* path = env->GetStringUTFChars(directory, nullptr);
     if (!path) return 0;
@@ -767,13 +767,13 @@ Java_dev_nova_zerotier_core_NativeCore_create(JNIEnv* env, jobject, jobject call
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_dev_nova_zerotier_core_NativeCore_destroy(JNIEnv*, jobject, jlong handle)
+Java_nova_lunavane_core_NativeCore_destroy(JNIEnv*, jobject, jlong handle)
 {
     delete fromHandle(handle);
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_dev_nova_zerotier_core_NativeCore_join(JNIEnv* env, jobject, jlong handle, jstring networkId)
+Java_nova_lunavane_core_NativeCore_join(JNIEnv* env, jobject, jlong handle, jstring networkId)
 {
     if (!handle) return ZT_RESULT_FATAL_ERROR_INTERNAL;
     const uint64_t id = parseHex(env, networkId);
@@ -782,7 +782,7 @@ Java_dev_nova_zerotier_core_NativeCore_join(JNIEnv* env, jobject, jlong handle, 
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_dev_nova_zerotier_core_NativeCore_leave(JNIEnv* env, jobject, jlong handle, jstring networkId)
+Java_nova_lunavane_core_NativeCore_leave(JNIEnv* env, jobject, jlong handle, jstring networkId)
 {
     if (!handle) return ZT_RESULT_FATAL_ERROR_INTERNAL;
     const uint64_t id = parseHex(env, networkId);
@@ -791,7 +791,7 @@ Java_dev_nova_zerotier_core_NativeCore_leave(JNIEnv* env, jobject, jlong handle,
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_dev_nova_zerotier_core_NativeCore_orbit(JNIEnv* env, jobject, jlong handle, jstring moonWorldId, jstring moonSeed)
+Java_nova_lunavane_core_NativeCore_orbit(JNIEnv* env, jobject, jlong handle, jstring moonWorldId, jstring moonSeed)
 {
     if (!handle) return ZT_RESULT_FATAL_ERROR_INTERNAL;
     const uint64_t id = parseHex(env, moonWorldId);
@@ -801,7 +801,7 @@ Java_dev_nova_zerotier_core_NativeCore_orbit(JNIEnv* env, jobject, jlong handle,
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_dev_nova_zerotier_core_NativeCore_deorbit(JNIEnv* env, jobject, jlong handle, jstring moonWorldId)
+Java_nova_lunavane_core_NativeCore_deorbit(JNIEnv* env, jobject, jlong handle, jstring moonWorldId)
 {
     if (!handle) return ZT_RESULT_FATAL_ERROR_INTERNAL;
     const uint64_t id = parseHex(env, moonWorldId);
@@ -810,7 +810,7 @@ Java_dev_nova_zerotier_core_NativeCore_deorbit(JNIEnv* env, jobject, jlong handl
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_dev_nova_zerotier_core_NativeCore_processWirePacket(JNIEnv* env, jobject, jlong handle,
+Java_nova_lunavane_core_NativeCore_processWirePacket(JNIEnv* env, jobject, jlong handle,
                                                          jbyteArray address, jint port, jbyteArray packet)
 {
     if (!handle) return ZT_RESULT_FATAL_ERROR_INTERNAL;
@@ -834,7 +834,7 @@ Java_dev_nova_zerotier_core_NativeCore_processWirePacket(JNIEnv* env, jobject, j
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_dev_nova_zerotier_core_NativeCore_processVirtualFrame(JNIEnv* env, jobject, jlong handle,
+Java_nova_lunavane_core_NativeCore_processVirtualFrame(JNIEnv* env, jobject, jlong handle,
                                                             jlong networkId, jlong sourceMac,
                                                             jlong destinationMac, jint etherType,
                                                             jint vlanId, jbyteArray payload)
@@ -848,7 +848,7 @@ Java_dev_nova_zerotier_core_NativeCore_processVirtualFrame(JNIEnv* env, jobject,
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_dev_nova_zerotier_core_NativeCore_multicastSubscribe(JNIEnv* env, jobject, jlong handle,
+Java_nova_lunavane_core_NativeCore_multicastSubscribe(JNIEnv* env, jobject, jlong handle,
                                                           jlong networkId, jlong mac, jlong adi)
 {
     if (!handle) return ZT_RESULT_FATAL_ERROR_INTERNAL;
@@ -857,7 +857,7 @@ Java_dev_nova_zerotier_core_NativeCore_multicastSubscribe(JNIEnv* env, jobject, 
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL
-Java_dev_nova_zerotier_core_NativeCore_peers(JNIEnv* env, jobject, jlong handle)
+Java_nova_lunavane_core_NativeCore_peers(JNIEnv* env, jobject, jlong handle)
 {
     if (!handle) return nullptr;
     const std::vector<std::string> lines = fromHandle(handle)->peersLines();
@@ -886,7 +886,7 @@ Java_dev_nova_zerotier_core_NativeCore_peers(JNIEnv* env, jobject, jlong handle)
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_dev_nova_zerotier_core_NativeCore_nodeAddress(JNIEnv* env, jobject, jlong handle)
+Java_nova_lunavane_core_NativeCore_nodeAddress(JNIEnv* env, jobject, jlong handle)
 {
     if (!handle) return nullptr;
     const std::string address = fromHandle(handle)->nodeAddress();
@@ -895,7 +895,7 @@ Java_dev_nova_zerotier_core_NativeCore_nodeAddress(JNIEnv* env, jobject, jlong h
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_dev_nova_zerotier_core_NativeCore_moonFileStatus(JNIEnv* env, jobject, jlong handle, jstring moonWorldId)
+Java_nova_lunavane_core_NativeCore_moonFileStatus(JNIEnv* env, jobject, jlong handle, jstring moonWorldId)
 {
     if (!handle) return -1;
     const uint64_t id = parseHex(env, moonWorldId);
