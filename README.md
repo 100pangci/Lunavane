@@ -28,7 +28,7 @@ Lunavane 是一个面向 Android 的 ZeroTier 客户端，使用官方 ZeroTier 
 - 有效的 16 位十六进制 ZeroTier 网络 ID，以及加入该网络的授权。
 - 若要访问远端 LAN，网络还需要配置相应的受管路由和网关转发。
 
-应用显示名称为 **Lunavane**。安装包名：Debug 为 `nova.lunavane.debug`，Release 为 `nova.lunavane`，源码命名空间与安装包名一致，为 `nova.lunavane`。版本号自动取当前 Git 提交数：第一条提交为 `1`，之后每提交一次递增 `1`。
+应用显示名称为 **Lunavane**。安装包名：Debug 为 `nova.lunavane.debug`，Release 为 `nova.lunavane`，源码命名空间与安装包名一致，为 `nova.lunavane`。`versionName` 取最近的 `vX.Y.Z` 格式 Git 标签（去掉前缀 `v`，例如 `v1.2.3` → `1.2.3`）；没有可用标签时为 `0.0.0`。`versionCode` 取当前 Git 提交数：第一条提交为 `1`，之后每提交一次递增 `1`。发布版本请先打 `vX.Y.Z` 标签再构建。
 
 > 从旧包 `dev.nova.zerotier` 更换到新包名时，Android 会将新包视为独立应用，旧包的节点身份、网络 ID、Moon 记录和外观偏好不会自动迁移。新包首次启动会生成新的节点身份，需要在 ZeroTier 控制台重新授权；如果之前已安装同包名的 `nova.lunavane.debug`，则属于同 ID 覆盖升级，数据会保留。Debug 包 `nova.lunavane.debug` 与 Release 包 `nova.lunavane` 也各自拥有独立的节点身份，请授权当前运行的那个节点。
 

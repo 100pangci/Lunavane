@@ -11,6 +11,25 @@ val gitCommitCount = runCatching {
     }.standardOutput.asText.get().trim().toInt()
 }.getOrDefault(0).coerceAtLeast(1)
 
+// versionName is driven by the nearest reachable vX.Y.Z tag, while versionCode
+// remains the Git commit count.
+val gitVersionName = runCatching {
+    providers.exec {
+        commandLine(
+            "git",
+            "describe",
+            "--tags",
+            "--abbrev=0",
+            "--match",
+            "v[0-9]*.[0-9]*.[0-9]*",
+        )
+        workingDir = rootDir
+    }.standardOutput.asText.get().trim()
+}.getOrNull()
+    ?.removePrefix("v")
+    ?.takeIf { Regex("""^\d+\.\d+\.\d+$""").matches(it) }
+    ?: "0.0.0"
+
 android {
     namespace = "nova.lunavane"
     compileSdk = 36
@@ -21,7 +40,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = gitCommitCount
-        versionName = gitCommitCount.toString()
+        versionName = gitVersionName
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
