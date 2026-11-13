@@ -34,7 +34,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.nova.zerotier.DiagnosticEntry
+import dev.nova.zerotier.NodeState
 import dev.nova.zerotier.TunnelUiState
+import dev.nova.zerotier.VirtualNetworkState
+import dev.nova.zerotier.vpn.NetworkRecoveryPhase
+import dev.nova.zerotier.vpn.PeerInfo
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -104,11 +108,55 @@ internal fun HomeScreen(
             }
             state.assignedAddresses.forEach { DataRow("Address", it) }
             if (active) {
+                DataRow("Node state", nodeStateText(state.nodeState))
+                DataRow("Network state", networkStateText(state.networkState))
+                DataRow("Transport", recoveryPhaseText(state.recoveryPhase))
                 Text("Routes", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                 if (state.activeRoutes.isEmpty()) {
                     Text("No active routes", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                 } else {
                     state.activeRoutes.forEach { DataRow("Route", it) }
+                }
+            }
+        }
+
+        if (active) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Peers", fontWeight = FontWeight.Medium, fontSize = 17.sp)
+                if (!state.peersQueried) {
+                    Text("Peer visibility pending", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                } else if (state.peers.isEmpty()) {
+                    Text("No peers visible", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                } else {
+                    state.peers.forEach { peer ->
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(peer.address, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                                Text(
+                                    peer.role.name,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                            Text(peerDetails(peer), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                            peer.paths.take(2).forEach { path ->
+                                Text(
+                                    path.endpoint +
+                                        (if (path.preferred) " · preferred" else "") +
+                                        (if (!path.active) " · idle" else ""),
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 11.sp,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -192,6 +240,16 @@ internal fun HomeScreen(
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(entry.worldId, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                             Text("Seed ${entry.seed}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                            Text(
+                                moonSeedStatus(entry.seed, state),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                            )
+                            Text(
+                                "Moon definition: status pending confirmation",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                            )
                         }
                         TextButton(onClick = { onDeorbit(entry.worldId) }, enabled = moonAvailable) {
                             Text("Deorbit", color = MaterialTheme.colorScheme.error)
@@ -250,3 +308,50 @@ private fun DataRow(label: String, value: String) {
         Text(value, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
     }
 }
+
+private fun nodeStateText(state: NodeState): String = when (state) {
+    NodeState.IDLE -> "Idle"
+    NodeState.STARTING -> "Starting"
+    NodeState.READY -> "Ready"
+    NodeState.FAILED -> "Failed"
+}
+
+private fun networkStateText(state: VirtualNetworkState): String = when (state) {
+    VirtualNetworkState.IDLE -> "Idle"
+    VirtualNetworkState.JOINING -> "Joining"
+    VirtualNetworkState.AUTHORIZED -> "Authorized"
+    VirtualNetworkState.PENDING -> "Pending authorization"
+    VirtualNetworkState.ACCESS_DENIED -> "Access denied"
+    VirtualNetworkState.NOT_FOUND -> "Not found"
+    VirtualNetworkState.PORT_ERROR -> "Port error"
+    VirtualNetworkState.CLIENT_TOO_OLD -> "Client too old"
+    VirtualNetworkState.AUTH_REQUIRED -> "Authentication required"
+    VirtualNetworkState.JOIN_FAILED -> "Join request failed"
+    VirtualNetworkState.LEFT -> "Left"
+    VirtualNetworkState.CONFIG_ERROR -> "Configuration error"
+}
+
+private fun recoveryPhaseText(phase: NetworkRecoveryPhase): String = when (phase) {
+    NetworkRecoveryPhase.WAITING_FOR_NETWORK -> "Waiting for a physical network"
+    NetworkRecoveryPhase.SWITCHING -> "Switching underlying network"
+    NetworkRecoveryPhase.RECOVERING -> "Recovering UDP transport"
+    NetworkRecoveryPhase.RETRY_WAIT -> "Retry scheduled"
+    NetworkRecoveryPhase.READY -> "Ready"
+    NetworkRecoveryPhase.EXHAUSTED -> "Recovery exhausted; waiting for a network change"
+    NetworkRecoveryPhase.STOPPED -> "Stopped"
+}
+
+private fun moonSeedStatus(seed: String, state: TunnelUiState): String {
+    if (!state.peersQueried) return "Seed peer: visibility pending"
+    val peer = state.peers.firstOrNull { it.address == seed }
+        ?: return "Seed peer: not currently visible"
+    val latency = peer.latencyMillis?.let { "$it ms" } ?: "latency unknown"
+    return "Seed peer: ${peer.role.name} · $latency · ${peer.paths.size} path(s)"
+}
+
+private fun peerDetails(peer: PeerInfo): String = buildList {
+    peer.version?.let { add("v$it") }
+    add(peer.latencyMillis?.let { "$it ms" } ?: "latency unknown")
+    if (peer.bonded) add("${peer.aliveLinks ?: 0}/${peer.totalLinks ?: 0} bonded links")
+    add("${peer.paths.size} path(s)")
+}.joinToString(" · ")

@@ -134,7 +134,17 @@ public:
     int deorbit(uint64_t moonWorldId)
     {
         return invoke([this, moonWorldId] {
-            return node_ ? ZT_Node_deorbit(node_, nullptr, moonWorldId) : ZT_RESULT_FATAL_ERROR_INTERNAL;
+            if (!node_) return static_cast<int>(ZT_RESULT_FATAL_ERROR_INTERNAL);
+            const int result = ZT_Node_deorbit(node_, nullptr, moonWorldId);
+            if (result != ZT_RESULT_OK) return result;
+            std::error_code error;
+            std::filesystem::remove(moonFilePath(moonWorldId), error);
+            if (error) {
+                __android_log_print(ANDROID_LOG_ERROR, kTag,
+                    "Cannot remove Moon state file %s: %s",
+                    moonFilePath(moonWorldId).c_str(), error.message().c_str());
+            }
+            return result;
         });
     }
 
@@ -163,7 +173,37 @@ public:
         });
     }
 
+    std::vector<std::string> peersLines()
+    {
+        return invokeOr([this] { return buildPeersLines(); }, std::vector<std::string>{});
+    }
+
+    std::string nodeAddress()
+    {
+        return invokeOr([this] {
+            if (!node_) return std::string{};
+            ZT_NodeStatus status{};
+            ZT_Node_status(node_, &status);
+            return hexId(status.address, 10);
+        }, std::string{});
+    }
+
+    int moonFileStatus(uint64_t worldId)
+    {
+        return invokeOr([this, worldId] {
+            std::error_code error;
+            const bool present = std::filesystem::exists(moonFilePath(worldId), error);
+            if (error) return -1;
+            return present ? 1 : 0;
+        }, -1);
+    }
+
 private:
+    std::string moonFilePath(uint64_t worldId) const
+    {
+        return stateDir_ + "/moons.d/" + hexId(worldId, 16) + ".moon";
+    }
+
     struct Task {
         std::function<void()> run;
         std::function<void()> fail;
@@ -214,6 +254,79 @@ private:
         }, [promise] { promise->set_value(static_cast<T>(ZT_RESULT_FATAL_ERROR_INTERNAL)); });
         try { return future.get(); }
         catch (...) { return static_cast<T>(ZT_RESULT_FATAL_ERROR_INTERNAL); }
+    }
+
+    template <typename F, typename T>
+    T invokeOr(F&& action, T fallback)
+    {
+        if (std::this_thread::get_id() == workerId_) return action();
+        auto promise = std::make_shared<std::promise<T>>();
+        auto future = promise->get_future();
+        post([promise, action = std::forward<F>(action)]() mutable {
+            try { promise->set_value(action()); }
+            catch (...) { promise->set_exception(std::current_exception()); }
+        }, [promise, fallback = std::move(fallback)]() mutable { promise->set_value(std::move(fallback)); });
+        try { return future.get(); }
+        catch (...) { return T{}; }
+    }
+
+    static const char* peerRoleText(enum ZT_PeerRole role)
+    {
+        switch (role) {
+            case ZT_PEER_ROLE_MOON: return "MOON";
+            case ZT_PEER_ROLE_PLANET: return "PLANET";
+            case ZT_PEER_ROLE_LEAF: return "LEAF";
+            default: return "UNKNOWN";
+        }
+    }
+
+    static std::string endpointText(const sockaddr_storage& address)
+    {
+        char text[INET6_ADDRSTRLEN]{};
+        if (address.ss_family == AF_INET) {
+            const auto* value = reinterpret_cast<const sockaddr_in*>(&address);
+            if (!inet_ntop(AF_INET, &value->sin_addr, text, sizeof(text))) return {};
+            return std::string(text) + ":" + std::to_string(ntohs(value->sin_port));
+        }
+        if (address.ss_family == AF_INET6) {
+            const auto* value = reinterpret_cast<const sockaddr_in6*>(&address);
+            if (!inet_ntop(AF_INET6, &value->sin6_addr, text, sizeof(text))) return {};
+            return "[" + std::string(text) + "]:" + std::to_string(ntohs(value->sin6_port));
+        }
+        return {};
+    }
+
+    std::vector<std::string> buildPeersLines()
+    {
+        if (!node_) return {};
+        ZT_PeerList* list = ZT_Node_peers(node_);
+        if (!list) return {};
+        std::vector<std::string> lines;
+        lines.reserve(static_cast<size_t>(list->peerCount));
+        for (unsigned long index = 0; index < list->peerCount; ++index) {
+            const ZT_Peer& peer = list->peers[index];
+            std::ostringstream line;
+            line << hexId(peer.address, 10) << '\t' << peerRoleText(peer.role) << '\t' << peer.latency << '\t';
+            if (peer.versionMajor >= 0 && peer.versionMinor >= 0 && peer.versionRev >= 0) {
+                line << peer.versionMajor << '.' << peer.versionMinor << '.' << peer.versionRev;
+            }
+            line << '\t' << (peer.isBonded ? 1 : 0)
+                 << '\t' << (peer.isBonded ? peer.numAliveLinks : -1)
+                 << '\t' << (peer.isBonded ? peer.numTotalLinks : -1)
+                 << '\t';
+            for (unsigned int pathIndex = 0;
+                 pathIndex < peer.pathCount && pathIndex < ZT_MAX_PEER_NETWORK_PATHS;
+                 ++pathIndex) {
+                if (pathIndex) line << ';';
+                const ZT_PeerPhysicalPath& path = peer.paths[pathIndex];
+                line << endpointText(path.address) << ','
+                     << (path.preferred ? 1 : 0) << ','
+                     << (path.lastReceive > 0 ? 1 : 0);
+            }
+            lines.push_back(line.str());
+        }
+        ZT_Node_freeQueryResult(node_, list);
+        return lines;
     }
 
     void waitForInitialization()
@@ -267,13 +380,20 @@ private:
         if (relative.empty()) return;
         const std::string path = bridge->stateDir_ + "/" + relative;
         if (length < 0) {
-            unlink(path.c_str());
+            if (unlink(path.c_str()) != 0 && errno != ENOENT) {
+                __android_log_print(ANDROID_LOG_ERROR, kTag,
+                    "Cannot remove Core state %s: %s", path.c_str(), std::strerror(errno));
+            }
             return;
         }
         const auto slash = path.find_last_of('/');
         if (slash != std::string::npos) ensureDirectory(path.substr(0, slash));
         const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-        if (fd < 0) return;
+        if (fd < 0) {
+            __android_log_print(ANDROID_LOG_ERROR, kTag,
+                "Cannot open Core state %s: %s", path.c_str(), std::strerror(errno));
+            return;
+        }
         const auto* bytes = static_cast<const uint8_t*>(data);
         size_t remaining = static_cast<size_t>(length);
         while (remaining) {
@@ -284,6 +404,10 @@ private:
             }
             bytes += written;
             remaining -= static_cast<size_t>(written);
+        }
+        if (remaining != 0) {
+            __android_log_print(ANDROID_LOG_ERROR, kTag,
+                "Incomplete Core state write %s: %s", path.c_str(), std::strerror(errno));
         }
         fchmod(fd, 0600);
         close(fd);
@@ -327,10 +451,20 @@ private:
     {
         Bridge* bridge = self(user);
         auto* env = bridge->attach();
-        if (!env || !bridge->callbacks_) { bridge->detach(); return -1; }
+        if (!env || !bridge->callbacks_ || !remote) { bridge->detach(); return -1; }
         const jclass cls = env->GetObjectClass(bridge->callbacks_);
-        const jmethodID method = env->GetMethodID(cls, "onWirePacket", "([BI[B)V");
-        if (!method || env->ExceptionCheck()) { env->ExceptionClear(); bridge->detach(); return -1; }
+        if (!cls) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            bridge->detach();
+            return -1;
+        }
+        const jmethodID method = env->GetMethodID(cls, "onWirePacket", "([BI[B)Z");
+        if (!method || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            env->DeleteLocalRef(cls);
+            bridge->detach();
+            return -1;
+        }
         uint16_t port = 0;
         std::array<uint8_t, 16> addressBytes{};
         size_t addressLength = 0;
@@ -345,22 +479,45 @@ private:
             addressLength = 16;
             port = ntohs(ipv6->sin6_port);
         } else {
+            env->DeleteLocalRef(cls);
             bridge->detach();
             return -1;
         }
         jbyteArray javaAddress = env->NewByteArray(static_cast<jsize>(addressLength));
+        if (!javaAddress || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            if (javaAddress) env->DeleteLocalRef(javaAddress);
+            env->DeleteLocalRef(cls);
+            bridge->detach();
+            return -1;
+        }
         jbyteArray javaPacket = env->NewByteArray(static_cast<jsize>(length));
-        if (!javaAddress || !javaPacket) { bridge->detach(); return -1; }
+        if (!javaPacket || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            env->DeleteLocalRef(javaAddress);
+            if (javaPacket) env->DeleteLocalRef(javaPacket);
+            env->DeleteLocalRef(cls);
+            bridge->detach();
+            return -1;
+        }
         env->SetByteArrayRegion(javaAddress, 0, static_cast<jsize>(addressLength), reinterpret_cast<const jbyte*>(addressBytes.data()));
         env->SetByteArrayRegion(javaPacket, 0, static_cast<jsize>(length), static_cast<const jbyte*>(packet));
-        env->CallVoidMethod(bridge->callbacks_, method, javaAddress, static_cast<jint>(port), javaPacket);
-        const bool ok = !env->ExceptionCheck();
-        if (!ok) env->ExceptionClear();
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            env->DeleteLocalRef(javaAddress);
+            env->DeleteLocalRef(javaPacket);
+            env->DeleteLocalRef(cls);
+            bridge->detach();
+            return -1;
+        }
+        const jboolean sent = env->CallBooleanMethod(bridge->callbacks_, method, javaAddress, static_cast<jint>(port), javaPacket);
+        const bool threw = env->ExceptionCheck();
+        if (threw) env->ExceptionClear();
         env->DeleteLocalRef(javaAddress);
         env->DeleteLocalRef(javaPacket);
         env->DeleteLocalRef(cls);
         bridge->detach();
-        return ok ? 0 : -1;
+        return !threw && sent == JNI_TRUE ? 0 : -1;
     }
 
     static void virtualFrame(ZT_Node*, void* user, void*, uint64_t nwid, void**, uint64_t sourceMac,
@@ -697,4 +854,51 @@ Java_dev_nova_zerotier_core_NativeCore_multicastSubscribe(JNIEnv* env, jobject, 
     if (!handle) return ZT_RESULT_FATAL_ERROR_INTERNAL;
     return fromHandle(handle)->multicastSubscribe(static_cast<uint64_t>(networkId),
             static_cast<uint64_t>(mac), static_cast<unsigned long>(adi));
+}
+
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_dev_nova_zerotier_core_NativeCore_peers(JNIEnv* env, jobject, jlong handle)
+{
+    if (!handle) return nullptr;
+    const std::vector<std::string> lines = fromHandle(handle)->peersLines();
+    const jclass stringClass = env->FindClass("java/lang/String");
+    if (!stringClass) return nullptr;
+    jobjectArray result = env->NewObjectArray(static_cast<jsize>(lines.size()), stringClass, nullptr);
+    if (!result) {
+        env->DeleteLocalRef(stringClass);
+        return nullptr;
+    }
+    for (size_t index = 0; index < lines.size(); ++index) {
+        const jstring line = env->NewStringUTF(lines[index].c_str());
+        if (!line) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            break;
+        }
+        env->SetObjectArrayElement(result, static_cast<jsize>(index), line);
+        env->DeleteLocalRef(line);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            break;
+        }
+    }
+    env->DeleteLocalRef(stringClass);
+    return result;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_nova_zerotier_core_NativeCore_nodeAddress(JNIEnv* env, jobject, jlong handle)
+{
+    if (!handle) return nullptr;
+    const std::string address = fromHandle(handle)->nodeAddress();
+    if (address.empty()) return nullptr;
+    return env->NewStringUTF(address.c_str());
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_nova_zerotier_core_NativeCore_moonFileStatus(JNIEnv* env, jobject, jlong handle, jstring moonWorldId)
+{
+    if (!handle) return -1;
+    const uint64_t id = parseHex(env, moonWorldId);
+    if (!id) return -1;
+    return fromHandle(handle)->moonFileStatus(id);
 }

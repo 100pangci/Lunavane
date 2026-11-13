@@ -6,36 +6,53 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
 import dev.nova.zerotier.DiagnosticLog
 import dev.nova.zerotier.MainActivity
 import dev.nova.zerotier.MoonSeed
 import dev.nova.zerotier.MoonStore
+import dev.nova.zerotier.NodeState
 import dev.nova.zerotier.TunnelState
 import dev.nova.zerotier.TunnelUiState
+import dev.nova.zerotier.VirtualNetworkState
 import dev.nova.zerotier.core.NativeCallbacks
 import dev.nova.zerotier.core.NativeCore
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
-import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.util.ArrayDeque
+import java.util.ConcurrentModificationException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.channels.CancelledKeyException
+import java.nio.channels.ClosedSelectorException
+import java.nio.channels.DatagramChannel
+import java.nio.channels.SelectionKey
+import java.nio.channels.Selector
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
-class ZeroTierVpnService : VpnService(), NativeCallbacks {
+class ZeroTierVpnService : VpnService() {
     companion object {
         const val ACTION_CONNECT = "dev.nova.zerotier.CONNECT"
         const val ACTION_DISCONNECT = "dev.nova.zerotier.DISCONNECT"
@@ -55,36 +72,106 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         private const val IPV6_MULTICAST_BASE = 0x333300000000L
         private const val MAX_DATAGRAM = 65507
         private const val MAX_PENDING_PACKETS = 256
+        private const val MAX_PENDING_BYTES = 2 * 1024 * 1024
+        private const val MAX_PACKET_WORK_ITEMS = 1024
+        private const val MAX_PACKET_WORK_BYTES = 8L * 1024 * 1024
+        private const val PEER_REFRESH_MILLIS = 5_000L
+        private const val NETWORK_SWITCH_DEBOUNCE_MILLIS = 300L
+        private const val DEFAULT_ROUTE_REBIND_COOLDOWN_NANOS = 5_000_000_000L
+        private val RECOVERABLE_WIRE_FAILURES = setOf(
+            WirePacketFailureCategory.NETWORK_UNREACHABLE,
+            WirePacketFailureCategory.SOCKET_CLOSED,
+            WirePacketFailureCategory.SOCKET_ERROR,
+            WirePacketFailureCategory.IO_ERROR,
+        )
+    }
+
+    private data class UnderlayCandidate(
+        val network: Network,
+        val descriptor: NetworkCandidateDescriptor,
+        val linkFingerprint: String,
+    ) {
+        val recoveryKey: String get() =
+            "${descriptor.key}|${descriptor.transport}|${descriptor.hasInternet}|${descriptor.validated}|$linkFingerprint"
+    }
+
+    private class NetworkObservation {
+        var capabilities: NetworkCapabilities? = null
+        var linkProperties: LinkProperties? = null
+    }
+
+    private enum class DefaultRouteFallbackOutcome {
+        INSTALLED,
+        OBSOLETE,
+        FAILED,
+    }
+
+    private class PreparedUdpSocket(
+        val channel: DatagramChannel,
+        val socket: DatagramSocket,
+        val boundToNetwork: Boolean,
+    ) {
+        var selector: Selector? = null
     }
 
     private val stopping = AtomicBoolean(false)
+    private val networkSwitchRestartPending = AtomicBoolean(false)
+    private val networkSwitchDebouncePending = AtomicBoolean(false)
+    private val defaultRouteFallbackPending = AtomicBoolean(false)
     private val sessionGeneration = AtomicLong(0)
+    private val lifecycleLock = Any()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val networkConfigExecutor = Executors.newSingleThreadExecutor()
     private val tunOutputLock = Any()
     private val udpSocketLock = Any()
+    private val sessionBoundNetworks = mutableSetOf<Network>()
+    private val networkCallbackLock = Any()
+    private val networkCandidateLock = Any()
+    private val networkSwitchDebounceLock = Any()
+    private val networkSwitchStateLock = Any()
+    private var hasObservedCandidateKey = false
+    private var lastObservedCandidateKey: String? = null
     private val coreExecutor = Executors.newSingleThreadExecutor()
     private val packetExecutor = Executors.newSingleThreadExecutor()
+    private val recoveryExecutor = Executors.newSingleThreadScheduledExecutor()
+    private val networkAttemptExecutor = Executors.newFixedThreadPool(2)
+    private val packetWorkBudget = PacketWorkBudget(MAX_PACKET_WORK_ITEMS, MAX_PACKET_WORK_BYTES)
+    private val networkAvailableOrder = AtomicLong()
+    private val networkCandidates = mutableMapOf<Network, UnderlayCandidate>()
+    private val networkObservations = mutableMapOf<Network, NetworkObservation>()
     private val arpTable = ConcurrentHashMap<Long, Long>()
     private val pendingIpv4 = mutableMapOf<Long, ArrayDeque<ByteArray>>()
     private var pendingIpv4Count = 0
+    private var pendingIpv4Bytes = 0
     private val neighborTable = ConcurrentHashMap<String, Long>()
     private val pendingIpv6 = mutableMapOf<String, ArrayDeque<ByteArray>>()
     private var pendingIpv6Count = 0
+    private var pendingIpv6Bytes = 0
     private val lastNeighborSolicitation = ConcurrentHashMap<String, Long>()
     private val multicastSubscribed = ConcurrentHashMap.newKeySet<Long>()
     private val packetDiagnosticKeys = ConcurrentHashMap.newKeySet<String>()
     @Volatile private var networkIdText = ""
     @Volatile private var networkId = 0L
-    @Volatile private var coreHandle = 0L
+    private val coreHandle = CoreHandleSlot()
     @Volatile private var tun: ParcelFileDescriptor? = null
     @Volatile private var tunInput: FileInputStream? = null
     @Volatile private var tunOutput: FileOutputStream? = null
     @Volatile private var udp: DatagramSocket? = null
+    @Volatile private var udpChannel: DatagramChannel? = null
+    @Volatile private var udpSelector: Selector? = null
     @Volatile private var selectedNetwork: Network? = null
     @Volatile private var socketNetwork: Network? = null
+    @Volatile private var socketBoundToNetwork = false
+    @Volatile private var lastBindFallbackNanos = 0L
+    @Volatile private var lastBoundNetwork: Network? = null
+    @Volatile private var activeUnderlayWasLost = false
+    @Volatile private var lastWireFailureCategory: String? = null
     @Volatile private var config: NetworkConfig? = null
     @Volatile private var tunReader: Thread? = null
     @Volatile private var udpReader: Thread? = null
     @Volatile private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var networkRecovery: NetworkRecoveryManager<UnderlayCandidate>? = null
+    private var pendingNetworkSwitchRunnable: Runnable? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -105,8 +192,10 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
                 stopTunnel(keepForeground = true)
                 networkIdText = requested.lowercase()
                 networkId = networkIdText.toULong(16).toLong()
-                stopping.set(false)
-                publish("Starting", "Initializing ZeroTier node") { it.copy(tunnelActive = true) }
+                synchronized(lifecycleLock) { stopping.set(false) }
+                publish("Starting", "Initializing ZeroTier node") {
+                    it.copy(tunnelActive = true, nodeState = NodeState.STARTING, networkState = VirtualNetworkState.IDLE)
+                }
                 try {
                     startTunnel()
                 } catch (exception: Exception) {
@@ -119,31 +208,59 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
     }
 
     private fun startTunnel() {
-        val session = sessionGeneration.incrementAndGet()
-        coreExecutor.execute {
+        val session = synchronized(lifecycleLock) { sessionGeneration.get() }
+        executeCoreTask {
             try {
-                val handle = NativeCore.create(SessionCallbacks(session), filesDir.resolve("zerotier").absolutePath)
+                val callbacks = SessionCallbacks(session)
+                val handle = NativeCore.create(callbacks, filesDir.resolve("zerotier").absolutePath)
                 if (handle == 0L) error("ZeroTier core initialization failed")
-                if (!isCurrentSession(session)) {
-                    NativeCore.destroy(handle)
-                    return@execute
+                callbacks.attachHandle(handle)
+                val installed = synchronized(lifecycleLock) {
+                    if (!isCurrentSession(session)) {
+                        false
+                    } else {
+                        coreHandle.set(handle)
+                        true
+                    }
                 }
-                coreHandle = handle
+                if (!installed) {
+                    NativeCore.destroy(handle)
+                    return@executeCoreTask
+                }
+                val nodeAddress = runCatching { NativeCore.nodeAddress(handle) }.getOrNull()
                 TunnelState.update { current ->
-                    if (isCurrentSession(session)) current.copy(nodeReady = true) else current
+                    if (isCurrentCore(session, handle)) current.copy(
+                        nodeReady = true,
+                        nodeState = NodeState.READY,
+                        nodeAddress = nodeAddress ?: current.nodeAddress,
+                    ) else current
                 }
                 restoreMoonSeeds(handle, session)
-                observeNetworks(session)
-                selectedNetwork?.let(::openUdpSocket)
-                if (!isCurrentSession(session)) return@execute
-                NativeCore.join(coreHandle, networkIdText)
-                if (isCurrentSession(session) && TunnelState.state.value.status == "Starting") {
-                    publish("Requesting configuration", "Joining ZeroTier network")
+                observeNetworks(session, handle)
+                if (!isCurrentCore(session, handle)) return@executeCoreTask
+                val joinResult = NativeCore.join(handle, networkIdText)
+                TunnelState.update { current ->
+                    if (isCurrentCore(session, handle)) current.copy(
+                        networkState = if (joinResult == 0) VirtualNetworkState.JOINING else VirtualNetworkState.JOIN_FAILED,
+                    ) else current
                 }
+                publishForCoreIf(
+                    session,
+                    handle,
+                    "Requesting configuration",
+                    "Joining ZeroTier network",
+                    shouldPublish = { it.status == "Starting" },
+                )
+                schedulePeerRefresh(session, handle)
             } catch (exception: Exception) {
                 if (isCurrentSession(session)) {
-                    publish("Failed", exception.cause?.message ?: exception.message ?: "Unable to start the tunnel")
-                    stopTunnel()
+                    publishForSession(
+                        session,
+                        null,
+                        "Failed",
+                        exception.cause?.message ?: exception.message ?: "Unable to start the tunnel",
+                    ) { it.copy(nodeState = NodeState.FAILED) }
+                    stopTunnel(expectedSession = session)
                 }
             }
         }
@@ -152,10 +269,27 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
     private fun isCurrentSession(session: Long): Boolean =
         !stopping.get() && sessionGeneration.get() == session
 
+    private fun isCurrentCore(session: Long, handle: Long): Boolean =
+        isCurrentCoreSession(session, handle, sessionGeneration.get(), coreHandle.get(), stopping.get())
+
+    private fun executeCoreTask(action: () -> Unit): Boolean = try {
+        coreExecutor.execute(action)
+        true
+    } catch (_: RejectedExecutionException) {
+        false
+    }
+
+    private fun executePacketTask(action: () -> Unit): Boolean = try {
+        packetExecutor.execute(action)
+        true
+    } catch (_: RejectedExecutionException) {
+        false
+    }
+
     private fun restoreMoonSeeds(handle: Long, session: Long) {
         if (!isCurrentSession(session)) return
         val entries = MoonStore.read(this)
-        TunnelState.update { it.copy(moonSeeds = entries) }
+        updateStateForCore(session, handle) { it.copy(moonSeeds = entries, moonMessage = "") }
         if (entries.isEmpty()) return
         var failed = 0
         for (entry in entries) {
@@ -164,16 +298,17 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         }
         if (!isCurrentSession(session)) return
         val message = if (failed == 0) {
-            "Restored ${entries.size} saved Moon orbit request(s)."
+            "Restored ${entries.size} saved Moon orbit request(s); Moon definition status is pending confirmation."
         } else {
-            "Restored ${entries.size - failed} Moon request(s); $failed could not be submitted."
+            "Restored ${entries.size - failed} Moon request(s); $failed could not be submitted. Moon definition status is pending confirmation."
         }
-        publishMoonStatus(message, entries)
+        publishMoonStatusForCore(session, handle, message, entries)
     }
 
     private fun requestOrbit(moonWorldId: String, moonSeed: String, startId: Int) {
-        val handle = coreHandle
-        if (stopping.get() || handle == 0L) {
+        val session = sessionGeneration.get()
+        val handle = coreHandle.get()
+        if (!isCurrentCore(session, handle)) {
             publishMoonStatus("Connect the ZeroTier node before orbiting a Moon.")
             if (handle == 0L) stopSelf(startId)
             return
@@ -185,24 +320,29 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
             return
         }
         val entry = MoonSeed(moonWorldId.lowercase(), moonSeed.lowercase())
-        coreExecutor.execute {
-            if (stopping.get() || coreHandle != handle) {
-                publishMoonStatus("Moon request canceled because the node stopped.")
-                return@execute
-            }
+        executeCoreTask {
+            if (!isCurrentCore(session, handle)) return@executeCoreTask
             val result = NativeCore.orbit(handle, entry.worldId, entry.seed)
             if (result == 0) {
-                val entries = MoonStore.upsert(this, entry)
-                publishMoonStatus("Orbit request saved. Core will query the seed for the Moon definition.", entries)
-            } else {
-                publishMoonStatus("Core could not submit the Moon orbit request (code $result).")
+                val stored = MoonStore.upsert(this, entry)
+                if (isCurrentCore(session, handle)) {
+                    val message = if (stored.persisted) {
+                        "Orbit request accepted by the Core and saved; Moon definition status is pending confirmation."
+                    } else {
+                        "Core accepted the orbit request, but saving it locally failed; it will be lost after restart."
+                    }
+                    publishMoonStatusForCore(session, handle, message, stored.entries)
+                }
+            } else if (isCurrentCore(session, handle)) {
+                publishMoonStatusForCore(session, handle, "Core could not submit the Moon orbit request (code $result).")
             }
         }
     }
 
     private fun requestDeorbit(moonWorldId: String, startId: Int) {
-        val handle = coreHandle
-        if (stopping.get() || handle == 0L) {
+        val session = sessionGeneration.get()
+        val handle = coreHandle.get()
+        if (!isCurrentCore(session, handle)) {
             publishMoonStatus("Connect the ZeroTier node before deorbiting a Moon.")
             if (handle == 0L) stopSelf(startId)
             return
@@ -212,17 +352,31 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
             return
         }
         val worldId = moonWorldId.lowercase()
-        coreExecutor.execute {
-            if (stopping.get() || coreHandle != handle) {
-                publishMoonStatus("Moon request canceled because the node stopped.")
-                return@execute
-            }
+        executeCoreTask {
+            if (!isCurrentCore(session, handle)) return@executeCoreTask
             val result = NativeCore.deorbit(handle, worldId)
             if (result == 0) {
-                val entries = MoonStore.remove(this, worldId)
-                publishMoonStatus("Deorbit request submitted and saved Moon data removed.", entries)
-            } else {
-                publishMoonStatus("Core could not submit the Moon deorbit request (code $result).")
+                val fileStatus = runCatching { NativeCore.moonFileStatus(handle, worldId) }.getOrDefault(-1)
+                val stored = if (fileStatus == 0) MoonStore.remove(this, worldId) else null
+                if (isCurrentCore(session, handle)) {
+                    if (stored == null) {
+                        val message = if (fileStatus > 0) {
+                            "Core accepted deorbit, but the Moon file is still present; the saved record was kept."
+                        } else {
+                            "Core accepted deorbit, but the Moon file status could not be checked; the saved record was kept."
+                        }
+                        publishMoonStatusForCore(session, handle, message, MoonStore.read(this))
+                    } else {
+                        val message = if (stored.persisted) {
+                            "Deorbit accepted; the Core Moon file is gone and the saved record was removed."
+                        } else {
+                            "Deorbit accepted and the Core Moon file is gone, but removing the saved record failed."
+                        }
+                        publishMoonStatusForCore(session, handle, message, stored.entries)
+                    }
+                }
+            } else if (isCurrentCore(session, handle)) {
+                publishMoonStatusForCore(session, handle, "Core could not submit the Moon deorbit request (code $result).")
             }
         }
     }
@@ -231,14 +385,38 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         value.length == length && value.all { it.digitToIntOrNull(16) != null }
 
     private fun publishMoonStatus(message: String, entries: List<MoonSeed> = MoonStore.read(this)) {
-        TunnelState.update { it.copy(moonSeeds = entries, moonMessage = message) }
-        DiagnosticLog.append("Moon: $message")
+        synchronized(lifecycleLock) {
+            TunnelState.update { it.copy(moonSeeds = entries, moonMessage = message) }
+            DiagnosticLog.append("Moon: $message")
+        }
+    }
+
+    private fun publishMoonStatusForCore(
+        session: Long,
+        handle: Long,
+        message: String,
+        entries: List<MoonSeed> = MoonStore.read(this),
+    ) {
+        synchronized(lifecycleLock) {
+            if (!isCurrentCore(session, handle)) return
+            TunnelState.update { current ->
+                if (isCurrentCore(session, handle)) current.copy(moonSeeds = entries, moonMessage = message) else current
+            }
+            DiagnosticLog.append("Moon: $message")
+        }
     }
 
     private inner class SessionCallbacks(private val session: Long) : NativeCallbacks {
-        override fun onWirePacket(address: ByteArray, port: Int, packet: ByteArray) {
-            if (isCurrentSession(session)) this@ZeroTierVpnService.onWirePacket(address, port, packet)
+        @Volatile private var handle = 0L
+
+        fun attachHandle(handle: Long) {
+            this.handle = handle
         }
+
+        private fun isCurrent(): Boolean = isCurrentCore(session, handle)
+
+        override fun onWirePacket(address: ByteArray, port: Int, packet: ByteArray): Boolean =
+            this@ZeroTierVpnService.sendWirePacket(session, handle, address, port, packet)
 
         override fun onVirtualFrame(
             networkId: Long,
@@ -248,141 +426,833 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
             vlanId: Int,
             payload: ByteArray,
         ) {
-            if (isCurrentSession(session)) {
-                this@ZeroTierVpnService.onVirtualFrame(networkId, sourceMac, destinationMac, etherType, vlanId, payload)
+            if (isCurrent()) {
+                this@ZeroTierVpnService.handleVirtualFrame(
+                    session,
+                    handle,
+                    networkId,
+                    sourceMac,
+                    destinationMac,
+                    etherType,
+                    vlanId,
+                    payload,
+                )
             }
         }
 
-        override fun onNetworkConfig(networkId: Long, operation: Int, status: Int, configJson: String): Int =
-            if (isCurrentSession(session)) {
-                this@ZeroTierVpnService.onNetworkConfig(networkId, operation, status, configJson)
+        override fun onNetworkConfig(networkId: Long, operation: Int, status: Int, configJson: String): Int {
+            if (!isCurrent()) return 0
+            val parsedConfig = if (operation == 3 || operation == 4) {
+                null
             } else {
-                0
+                try {
+                    NetworkConfig.parse(configJson)
+                } catch (_: Exception) {
+                    executePacketTask {
+                        publishForCore(session, handle, "Configuration error", "Invalid network configuration")
+                    }
+                    return 22
+                }
             }
+            // Core consumes this return value as the virtual port configuration result.
+            // Run Binder/TUN work elsewhere, then return the completed result to Core.
+            val task = FutureTask<Int> {
+                applyNetworkConfig(session, handle, networkId, operation, status, parsedConfig)
+            }
+            return try {
+                networkConfigExecutor.execute(task)
+                task.get()
+            } catch (_: RejectedExecutionException) {
+                5
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                5
+            } catch (exception: ExecutionException) {
+                DiagnosticLog.append("Network config callback failed: ${exception.cause?.message ?: exception.message}")
+                22
+            }
+        }
 
         override fun onNodeEvent(eventType: Int, message: String) {
-            if (isCurrentSession(session)) this@ZeroTierVpnService.onNodeEvent(eventType, message)
+            if (!isCurrent()) return
+            // Publishing a status also updates the notification, which is a blocking
+            // Binder call, so keep it off the Core native worker.
+            executeCoreTask {
+                handleNodeEvent(session, handle, eventType, message)
+            }
         }
     }
 
-    private fun openUdpSocket(network: Network?) {
-        synchronized(udpSocketLock) {
-            if (stopping.get() || (network != null && network != selectedNetwork)) return
-            val oldSocket = udp
-            if (oldSocket != null && socketNetwork == network && !oldSocket.isClosed) return
-            udp = null
-            socketNetwork = null
-            udpReader?.interrupt()
-            udpReader = null
-            oldSocket?.close()
-
-            var newSocket: DatagramSocket? = null
-            try {
-                val socket = DatagramSocket(null)
-                newSocket = socket
-                socket.reuseAddress = true
-                check(protect(socket)) { "Could not protect the ZeroTier UDP socket" }
-                if (network != null) {
-                    try {
-                        network.bindSocket(socket)
-                    } catch (exception: IOException) {
-                        if (network != selectedNetwork) throw exception
-                        DiagnosticLog.append("Could not bind UDP socket to the default network; using its protected default route")
-                    }
-                }
-                socket.bind(InetSocketAddress(PORT))
-                udp = socket
-                socketNetwork = network
-                DiagnosticLog.append("ZeroTier UDP socket ready")
-                udpReader = thread(name = "ZeroTier-udp") {
-                    val bytes = ByteArray(MAX_DATAGRAM)
-                    while (!stopping.get() && !socket.isClosed) {
-                        try {
-                            val packet = DatagramPacket(bytes, bytes.size)
-                            socket.receive(packet)
-                            val address = packet.address.address.copyOf()
-                            val payload = packet.data.copyOfRange(packet.offset, packet.offset + packet.length)
-                            val port = packet.port
-                            coreExecutor.execute {
-                                val handle = coreHandle
-                                if (!stopping.get() && handle != 0L) {
-                                    NativeCore.processWirePacket(handle, address, port, payload)
+    private fun openUdpSocket(
+        network: Network,
+        candidateKey: String,
+        session: Long,
+        handle: Long,
+        recovery: NetworkRecoveryManager<UnderlayCandidate>,
+        revision: Long,
+    ): Boolean {
+        val alreadyReady = recovery.runIfCurrentRevision(revision) {
+            synchronized(networkCandidateLock) {
+                if (networkCandidates[network]?.recoveryKey != candidateKey) {
+                    false
+                } else {
+                    synchronized(lifecycleLock) {
+                        if (!isCurrentCore(session, handle) || networkRecovery !== recovery || networkSwitchRestartPending.get() || networkSwitchDebouncePending.get()) {
+                            false
+                        } else {
+                            synchronized(udpSocketLock) {
+                                val ready = udpSocketCoversNetworkLocked(network)
+                                if (ready) {
+                                    selectedNetwork = network
                                 }
+                                ready
                             }
-                        } catch (exception: IOException) {
-                            if (!stopping.get() && udp === socket) {
-                                publish("Degraded", "UDP receive failed: ${exception.message}")
-                            }
-                            break
                         }
                     }
                 }
-            } catch (exception: Exception) {
-                newSocket?.close()
-                if (!stopping.get()) publish("Degraded", "Could not open ZeroTier UDP socket: ${exception.message}")
+            }
+        }
+        if (alreadyReady) {
+            updateUnderlyingNetworksForCore(session, handle, arrayOf(network))
+            return true
+        }
+
+        val prepared = try {
+            prepareUdpSocket(network)
+        } catch (exception: Exception) {
+            if (isCurrentCore(session, handle)) {
+                publishForCore(session, handle, "Degraded", "Could not prepare ZeroTier UDP socket: ${exception.message}")
+            }
+            return false
+        }
+        var installedPrepared = false
+        val accepted = recovery.runIfCurrentRevision(revision) {
+            synchronized(networkCandidateLock) {
+                if (networkCandidates[network]?.recoveryKey != candidateKey) {
+                    false
+                } else {
+                    synchronized(lifecycleLock) {
+                        if (!isCurrentCore(session, handle) || networkRecovery !== recovery || networkSwitchRestartPending.get() || networkSwitchDebouncePending.get()) {
+                            false
+                        } else {
+                            synchronized(udpSocketLock) {
+                                if (udpSocketCoversNetworkLocked(network)) {
+                                    selectedNetwork = network
+                                    true
+                                } else {
+                                    val oldNetwork = socketNetwork
+                                    closeUdpSocketLocked()
+                                    try {
+                                        bindPreparedUdpSocket(prepared)
+                                        installPreparedUdpSocketLocked(prepared, network, session, handle)
+                                        installedPrepared = true
+                                        true
+                                    } catch (exception: Exception) {
+                                        closePreparedUdpSocket(prepared)
+                                        val restored = oldNetwork?.let { restoreUdpSocketLocked(it, session, handle) } ?: false
+                                        if (!restored) selectedNetwork = null
+                                        publishForCore(
+                                            session,
+                                            handle,
+                                            "Degraded",
+                                            "Could not bind ZeroTier UDP socket: ${exception.message}",
+                                        )
+                                        false
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (!installedPrepared) closePreparedUdpSocket(prepared)
+        if (!accepted) return false
+        updateUnderlyingNetworksForCore(session, handle, arrayOf(network))
+        if (installedPrepared) {
+            if (prepared.boundToNetwork) {
+                DiagnosticLog.append("Protected ZeroTier UDP socket bound to ${network}")
+            } else {
+                DiagnosticLog.append("Protected ZeroTier UDP socket is using the default physical route")
+            }
+        }
+        return true
+    }
+
+    private fun udpSocketCoversNetworkLocked(network: Network): Boolean {
+        val socket = udp
+        val channel = udpChannel
+        if (socket == null || channel == null || socketNetwork != network) return false
+        if (socket.isClosed || !channel.isOpen) return false
+        if (socketBoundToNetwork) return true
+        return !shouldRetryNetworkBinding(
+            socketBoundToNetwork = false,
+            lastBindFallbackNanos = lastBindFallbackNanos,
+            nowNanos = System.nanoTime(),
+            cooldownNanos = DEFAULT_ROUTE_REBIND_COOLDOWN_NANOS,
+        )
+    }
+
+    private fun prepareUdpSocket(network: Network?): PreparedUdpSocket {
+        val channel = DatagramChannel.open()
+        try {
+            channel.configureBlocking(false)
+            val socket = channel.socket()
+            socket.reuseAddress = true
+            check(protect(socket)) { "Could not protect the ZeroTier UDP socket" }
+            var boundToNetwork = false
+            if (network != null) {
+                try {
+                    network.bindSocket(socket)
+                    boundToNetwork = true
+                } catch (exception: IOException) {
+                    DiagnosticLog.append(
+                        "Could not bind UDP socket to $network; using its protected default route: ${exception.message}",
+                    )
+                }
+            }
+            return PreparedUdpSocket(channel, socket, boundToNetwork)
+        } catch (exception: Exception) {
+            runCatching { channel.close() }
+            throw exception
+        }
+    }
+
+    private fun bindPreparedUdpSocket(prepared: PreparedUdpSocket) {
+        prepared.socket.bind(InetSocketAddress(PORT))
+        val selector = Selector.open()
+        prepared.selector = selector
+        prepared.channel.register(selector, SelectionKey.OP_READ)
+    }
+
+    private fun installPreparedUdpSocketLocked(
+        prepared: PreparedUdpSocket,
+        network: Network,
+        session: Long,
+        handle: Long,
+    ) {
+        val channel = prepared.channel
+        val selector = checkNotNull(prepared.selector)
+        udp = prepared.socket
+        udpChannel = channel
+        udpSelector = selector
+        socketNetwork = network
+        selectedNetwork = network
+        socketBoundToNetwork = prepared.boundToNetwork
+        lastBindFallbackNanos = if (prepared.boundToNetwork) 0L else System.nanoTime()
+        lastBoundNetwork = network
+        sessionBoundNetworks.add(network)
+        udpReader = thread(name = "ZeroTier-udp-$session") {
+            val bytes = ByteArray(MAX_DATAGRAM)
+            val buffer = ByteBuffer.wrap(bytes)
+            while (isCurrentCore(session, handle) && udpChannel === channel && channel.isOpen) {
+                try {
+                    selector.select()
+                    val keys = selector.selectedKeys().iterator()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        keys.remove()
+                        if (!key.isValid || !key.isReadable) continue
+                        buffer.clear()
+                        val remote = channel.receive(buffer) as? InetSocketAddress ?: continue
+                        val length = buffer.position()
+                        if (length == 0) continue
+                        val address = remote.address.address.copyOf()
+                        val payload = bytes.copyOf(length)
+                        val port = remote.port
+                        if (!enqueuePacketWork(session, handle, length) {
+                                if (isCurrentCore(session, handle)) {
+                                    NativeCore.processWirePacket(handle, address, port, payload)
+                                }
+                            }
+                        ) {
+                            logPacketOnce("packet-work-budget", "Dropped packet work because the bounded packet queue is full")
+                        }
+                    }
+                } catch (exception: IOException) {
+                    if (isCurrentCore(session, handle) && udpChannel === channel) {
+                        publishForCore(session, handle, "Degraded", "UDP receive failed: ${exception.message}")
+                        invalidateUdpSocket(session, handle, channel)
+                        notifyTransportFailure(session, handle)
+                    }
+                    break
+                } catch (_: ClosedSelectorException) {
+                    break
+                } catch (_: CancelledKeyException) {
+                    break
+                } catch (_: ConcurrentModificationException) {
+                    break
+                }
             }
         }
     }
 
-    private fun observeNetworks(session: Long) {
-        if (!isCurrentSession(session)) return
-        val manager = getSystemService(ConnectivityManager::class.java)
+    private fun restoreUdpSocketLocked(network: Network, session: Long, handle: Long): Boolean = try {
+        val restored = prepareUdpSocket(network)
+        try {
+            bindPreparedUdpSocket(restored)
+            installPreparedUdpSocketLocked(restored, network, session, handle)
+            true
+        } catch (exception: Exception) {
+            closePreparedUdpSocket(restored)
+            DiagnosticLog.append("Could not restore the previous UDP network: ${exception.message}")
+            false
+        }
+    } catch (exception: Exception) {
+        DiagnosticLog.append("Could not restore the previous UDP network: ${exception.message}")
+        false
+    }
+
+    private fun closePreparedUdpSocket(prepared: PreparedUdpSocket) {
+        runCatching { prepared.selector?.close() }
+        runCatching { prepared.channel.close() }
+        prepared.socket.close()
+    }
+
+    private fun updateUnderlyingNetworksForCore(session: Long, handle: Long, networks: Array<Network>) {
+        mainHandler.post {
+            if (!isCurrentCore(session, handle) || socketNetwork != networks.firstOrNull()) return@post
+            val updated = runCatching { setUnderlyingNetworks(networks) }.getOrElse {
+                DiagnosticLog.append("Could not update VPN underlying network: ${it.message}")
+                return@post
+            }
+            if (!updated) DiagnosticLog.append("Android did not accept the VPN underlying network update yet")
+        }
+    }
+
+    private fun clearUnderlyingNetworksAfterStop() {
+        val stoppedGeneration = sessionGeneration.get()
+        mainHandler.post {
+            if (sessionGeneration.get() != stoppedGeneration || !stopping.get()) return@post
+            runCatching { setUnderlyingNetworks(emptyArray()) }
+                .onFailure { DiagnosticLog.append("Could not clear VPN underlying network: ${it.message}") }
+        }
+    }
+
+    private fun closeUdpSocketLocked() {
+        val socket = udp
+        val channel = udpChannel
+        val selector = udpSelector
+        udp = null
+        udpChannel = null
+        udpSelector = null
+        socketNetwork = null
+        socketBoundToNetwork = false
+        udpReader?.interrupt()
+        udpReader = null
+        runCatching { selector?.close() }
+        runCatching { channel?.close() }
+        socket?.close()
+    }
+
+    private fun invalidateUdpSocket(session: Long, handle: Long, channel: DatagramChannel?) {
+        synchronized(udpSocketLock) {
+            if (!isCurrentCore(session, handle)) return
+            if (channel == null || udpChannel === channel) closeUdpSocketLocked()
+        }
+    }
+
+    private fun observeNetworks(session: Long, handle: Long) {
+        if (!isCurrentCore(session, handle)) return
+        val connectivity = getSystemService(ConnectivityManager::class.java)
+        lateinit var recovery: NetworkRecoveryManager<UnderlayCandidate>
+        recovery = NetworkRecoveryManager(
+            scheduler = ExecutorRecoveryScheduler(recoveryExecutor),
+            sessionIsCurrent = { isCurrentCore(session, handle) },
+            onNetworkAvailable = { candidate, revision ->
+                openUdpSocketWithFallback(candidate, session, handle, recovery, revision)
+            },
+            onNoNetwork = {
+                val current = synchronized(lifecycleLock) {
+                    if (!isCurrentCore(session, handle)) {
+                        false
+                    } else {
+                        selectedNetwork = null
+                        true
+                    }
+                }
+                if (current) {
+                    synchronized(udpSocketLock) {
+                        if (isCurrentCore(session, handle)) closeUdpSocketLocked()
+                    }
+                    updateUnderlyingNetworksForCore(session, handle, emptyArray())
+                    publishForCore(session, handle, "Reconnecting", "Waiting for a physical network for ZeroTier UDP")
+                }
+            },
+            onPhaseChanged = { phase, sequence ->
+                val applied = synchronized(lifecycleLock) {
+                    if (!isCurrentCore(session, handle)) {
+                        false
+                    } else {
+                        var phaseApplied = false
+                        TunnelState.update { current ->
+                            if (isCurrentCore(session, handle) && sequence > current.recoveryPhaseSequence) {
+                                phaseApplied = true
+                                current.copy(recoveryPhase = phase, recoveryPhaseSequence = sequence)
+                            } else {
+                                phaseApplied = false
+                                current
+                            }
+                        }
+                        phaseApplied
+                    }
+                }
+                if (applied && isCurrentCore(session, handle) &&
+                    TunnelState.state.value.recoveryPhaseSequence == sequence
+                ) {
+                        when (phase) {
+                            NetworkRecoveryPhase.RETRY_WAIT -> DiagnosticLog.append("UDP transport recovery retry scheduled")
+                            NetworkRecoveryPhase.READY -> {
+                                DiagnosticLog.append("UDP transport is ready")
+                                publishRecoveryStatus(session, handle, sequence, "Connected", "UDP transport is ready") {
+                                    it.status == "Degraded" && it.networkState == VirtualNetworkState.AUTHORIZED
+                                }
+                            }
+                            NetworkRecoveryPhase.EXHAUSTED -> publishRecoveryStatus(
+                                session,
+                                handle,
+                                sequence,
+                                "Degraded",
+                                "UDP transport recovery attempts were exhausted",
+                            ) { true }
+                            else -> Unit
+                        }
+                    }
+            },
+            attemptExecutor = networkAttemptExecutor,
+        )
+        val recoveryInstalled = synchronized(lifecycleLock) {
+            if (!isCurrentCore(session, handle)) {
+                false
+            } else {
+                networkRecovery = recovery
+                true
+            }
+        }
+        if (!recoveryInstalled) {
+            recovery.stop()
+            return
+        }
+        synchronized(networkCandidateLock) {
+            networkCandidates.clear()
+            networkObservations.clear()
+        }
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                if (!isCurrentSession(session)) return
-                selectedNetwork = network
-                openUdpSocket(network)
+                if (!isCurrentCore(session, handle)) return
+                synchronized(networkCandidateLock) {
+                    if (!isCurrentCore(session, handle) || networkRecovery !== recovery) return
+                    networkObservations.getOrPut(network) { NetworkObservation() }
+                }
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                if (!isCurrentCore(session, handle)) return
+                refreshNetworkCandidate(
+                    network,
+                    capabilities = networkCapabilities,
+                    recovery = recovery,
+                    session = session,
+                    handle = handle,
+                )
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                if (!isCurrentCore(session, handle)) return
+                refreshNetworkCandidate(
+                    network,
+                    linkProperties = linkProperties,
+                    recovery = recovery,
+                    session = session,
+                    handle = handle,
+                )
             }
 
             override fun onLost(network: Network) {
-                if (!isCurrentSession(session)) return
-                val lostDefault = synchronized(udpSocketLock) {
-                    if (selectedNetwork != network) return@synchronized false
-                    selectedNetwork = null
-                    if (socketNetwork == network) {
-                        val socket = udp
-                        udp = null
-                        socketNetwork = null
-                        udpReader?.interrupt()
-                        udpReader = null
-                        socket?.close()
-                    }
-                    true
+                if (!isCurrentCore(session, handle)) return
+                synchronized(networkCandidateLock) {
+                    if (!isCurrentCore(session, handle) || networkRecovery !== recovery) return
+                    networkObservations.remove(network)
+                    networkCandidates.remove(network)
                 }
-                if (lostDefault) publish("Reconnecting", "Underlying network changed")
+                val lostBoundNetwork = synchronized(lifecycleLock) {
+                    if (!isCurrentCore(session, handle)) {
+                        false
+                    } else {
+                        synchronized(udpSocketLock) {
+                            if (!sessionBoundNetworks.contains(network)) {
+                                false
+                            } else {
+                                if (socketNetwork == network) {
+                                    selectedNetwork = null
+                                    closeUdpSocketLocked()
+                                } else if (selectedNetwork == network) {
+                                    selectedNetwork = null
+                                }
+                                true
+                            }
+                        }
+                    }
+                }
+                if (lostBoundNetwork) {
+                    activeUnderlayWasLost = true
+                    if (socketNetwork == null) updateUnderlyingNetworksForCore(session, handle, emptyArray())
+                    cancelPendingNetworkSwitchReconnect()
+                    requestNetworkSwitchReconnect(
+                        session,
+                        handle,
+                        recovery,
+                        "Active physical network was lost",
+                    )
+                } else {
+                    updateNetworkCandidate(recovery, session, handle)
+                }
             }
         }
-        networkCallback = callback
-        manager.registerDefaultNetworkCallback(callback)
+        synchronized(networkCallbackLock) {
+            if (!isCurrentCore(session, handle) || networkCallback != null) return
+            try {
+                connectivity.registerNetworkCallback(
+                    NetworkRequest.Builder()
+                        .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                        .build(),
+                    callback,
+                )
+                networkCallback = callback
+            } catch (exception: Exception) {
+                if (isCurrentCore(session, handle)) {
+                    publishForCore(session, handle, "Degraded", "Could not monitor physical networks: ${exception.message}")
+                }
+            }
+        }
     }
 
-    override fun onNetworkConfig(networkId: Long, operation: Int, status: Int, configJson: String): Int {
-        if (stopping.get() || networkId != this.networkId) return 0
+    private fun refreshNetworkCandidate(
+        network: Network,
+        recovery: NetworkRecoveryManager<UnderlayCandidate>,
+        session: Long,
+        handle: Long,
+        capabilities: NetworkCapabilities? = null,
+        linkProperties: LinkProperties? = null,
+    ) {
+        val updated = synchronized(networkCandidateLock) {
+            if (!isCurrentCore(session, handle) || networkRecovery !== recovery) return
+            val observation = networkObservations.getOrPut(network) { NetworkObservation() }
+            if (capabilities != null) observation.capabilities = capabilities
+            if (linkProperties != null) observation.linkProperties = linkProperties
+            val currentCapabilities = observation.capabilities ?: return@synchronized false
+            val currentLinkProperties = observation.linkProperties ?: return@synchronized false
+            val transport = when {
+                currentCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> UnderlayTransport.WIFI
+                currentCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> UnderlayTransport.CELLULAR
+                currentCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> UnderlayTransport.ETHERNET
+                currentCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> UnderlayTransport.VPN
+                else -> UnderlayTransport.OTHER
+            }
+            val previous = networkCandidates[network]
+            val descriptor = NetworkCandidateDescriptor(
+                key = network.toString(),
+                notVpn = currentCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN),
+                transport = transport,
+                hasInternet = currentCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
+                validated = currentCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+                availableOrder = previous?.descriptor?.availableOrder ?: networkAvailableOrder.incrementAndGet(),
+            )
+            if (!descriptor.notVpn || transport !in setOf(UnderlayTransport.WIFI, UnderlayTransport.CELLULAR, UnderlayTransport.ETHERNET)) {
+                networkCandidates.remove(network)
+            } else {
+                networkCandidates[network] = UnderlayCandidate(
+                    network = network,
+                    descriptor = descriptor,
+                    linkFingerprint = linkPropertiesFingerprint(
+                        currentLinkProperties.interfaceName,
+                        currentLinkProperties.linkAddresses.map { it.toString() },
+                        currentLinkProperties.routes.map { it.toString() },
+                        linkPropertiesMtu(currentLinkProperties),
+                    ),
+                )
+            }
+            true
+        }
+        if (updated) updateNetworkCandidate(recovery, session, handle)
+    }
+
+    private fun linkPropertiesMtu(linkProperties: LinkProperties): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) linkProperties.mtu else 0
+
+    private fun openUdpSocketWithFallback(
+        preferred: UnderlayCandidate,
+        session: Long,
+        handle: Long,
+        recovery: NetworkRecoveryManager<UnderlayCandidate>,
+        revision: Long,
+    ): Boolean {
+        if (!isCurrentCore(session, handle) || networkSwitchRestartPending.get() || networkSwitchDebouncePending.get()) return false
+        val candidates = synchronized(networkCandidateLock) {
+            val descriptors = networkCandidates.values.map { it.descriptor }
+            rankNetworkCandidates(descriptors, socketNetwork?.toString())
+                .mapNotNull { descriptor ->
+                    networkCandidates.values.firstOrNull { it.descriptor.key == descriptor.key }
+                }
+        }
+        val ordered = listOf(preferred) + candidates.filterNot { it.network == preferred.network }
+        for (candidate in ordered) {
+            if (!isCurrentCore(session, handle)) return false
+            val stillAvailable = synchronized(networkCandidateLock) {
+                networkCandidates[candidate.network]?.recoveryKey == candidate.recoveryKey
+            }
+            if (!stillAvailable) continue
+            if (openUdpSocket(candidate.network, candidate.recoveryKey, session, handle, recovery, revision)) return true
+        }
+        return false
+    }
+
+    private fun updateNetworkCandidate(
+        recovery: NetworkRecoveryManager<UnderlayCandidate>,
+        session: Long,
+        handle: Long,
+    ) {
+        if (!isCurrentCore(session, handle) || networkRecovery !== recovery) return
+        val candidate = currentNetworkCandidate(recovery, session, handle)
+        val candidateKey = candidate?.recoveryKey
+        val candidateChanged = synchronized(networkSwitchStateLock) {
+            if (sessionGeneration.get() != session || networkRecovery !== recovery) return
+            val changed = hasCandidateKeyChanged(
+                lastObservedCandidateKey,
+                candidateKey,
+                hasObservedCandidateKey,
+            )
+            hasObservedCandidateKey = true
+            lastObservedCandidateKey = candidateKey
+            changed
+        }
+        if (candidateChanged) {
+            val shouldRestart = shouldRestartTunnelForNetworkSwitch(
+                lastBoundNetwork?.toString(),
+                socketNetwork?.toString(),
+                candidate?.network?.toString(),
+            )
+            if (shouldRestart && candidate != null) {
+                scheduleNetworkSwitchReconnect(session, handle, recovery, candidate.network)
+            } else {
+                cancelPendingNetworkSwitchReconnect()
+            }
+        }
+        recovery.updateCandidate(candidateKey, candidate)
+    }
+
+    private fun currentNetworkCandidate(
+        recovery: NetworkRecoveryManager<UnderlayCandidate>,
+        session: Long,
+        handle: Long,
+    ): UnderlayCandidate? {
+        if (!isCurrentCore(session, handle) || networkRecovery !== recovery) return null
+        return synchronized(networkCandidateLock) {
+            if (!isCurrentCore(session, handle) || networkRecovery !== recovery) {
+                null
+            } else {
+                val descriptors = networkCandidates.values.map { it.descriptor }
+                val selected = selectNetworkCandidate(
+                    descriptors,
+                    socketNetwork?.toString() ?: selectedNetwork?.toString(),
+                ) ?: return@synchronized null
+                networkCandidates.values.firstOrNull { it.descriptor.key == selected.key }
+            }
+        }
+    }
+
+    private fun scheduleNetworkSwitchReconnect(
+        session: Long,
+        handle: Long,
+        recovery: NetworkRecoveryManager<UnderlayCandidate>,
+        targetNetwork: Network,
+    ) {
+        if (!isCurrentCore(session, handle) || networkSwitchRestartPending.get()) return
+        lateinit var task: Runnable
+        task = Runnable {
+            val wasPending = synchronized(networkSwitchDebounceLock) {
+                if (pendingNetworkSwitchRunnable !== task) {
+                    false
+                } else {
+                    pendingNetworkSwitchRunnable = null
+                    true
+                }
+            }
+            if (!wasPending) return@Runnable
+            if (!isCurrentCore(session, handle) || networkSwitchRestartPending.get()) {
+                clearNetworkSwitchDebouncePending()
+                return@Runnable
+            }
+            val current = currentNetworkCandidate(recovery, session, handle)
+            val activeNetwork = socketNetwork
+            val switchStillNeeded = shouldRestartTunnelForNetworkSwitch(
+                lastBoundNetwork?.toString(),
+                activeNetwork?.toString(),
+                targetNetwork.toString(),
+            )
+            if (current?.network == targetNetwork && switchStillNeeded) {
+                requestNetworkSwitchReconnect(
+                    session,
+                    handle,
+                    recovery,
+                    "Preferred physical network changed",
+                    targetNetwork,
+                )
+            }
+            clearNetworkSwitchDebouncePending()
+        }
+        synchronized(networkSwitchDebounceLock) {
+            pendingNetworkSwitchRunnable?.let(mainHandler::removeCallbacks)
+            pendingNetworkSwitchRunnable = task
+            networkSwitchDebouncePending.set(true)
+            if (!mainHandler.postDelayed(task, NETWORK_SWITCH_DEBOUNCE_MILLIS)) {
+                pendingNetworkSwitchRunnable = null
+                networkSwitchDebouncePending.set(false)
+            }
+        }
+    }
+
+    private fun clearNetworkSwitchDebouncePending() {
+        synchronized(networkSwitchDebounceLock) {
+            if (pendingNetworkSwitchRunnable == null) networkSwitchDebouncePending.set(false)
+        }
+    }
+
+    private fun cancelPendingNetworkSwitchReconnect() {
+        synchronized(networkSwitchDebounceLock) {
+            pendingNetworkSwitchRunnable?.let(mainHandler::removeCallbacks)
+            if (pendingNetworkSwitchRunnable != null) networkSwitchDebouncePending.set(false)
+            pendingNetworkSwitchRunnable = null
+        }
+    }
+
+    private fun requestNetworkSwitchReconnect(
+        session: Long,
+        handle: Long,
+        recovery: NetworkRecoveryManager<UnderlayCandidate>,
+        reason: String,
+        targetNetwork: Network? = null,
+    ) {
+        if (!isCurrentCore(session, handle) || !networkSwitchRestartPending.compareAndSet(false, true)) return
+        if (!mainHandler.post {
+                synchronized(this) {
+                    if (!isCurrentCore(session, handle) || networkRecovery !== recovery) {
+                        networkSwitchRestartPending.set(false)
+                        return@synchronized
+                    }
+                    if (targetNetwork != null && !activeUnderlayWasLost) {
+                        val candidate = currentNetworkCandidate(recovery, session, handle)
+                        val activeNetwork = socketNetwork
+                        val switchStillNeeded = shouldRestartTunnelForNetworkSwitch(
+                            lastBoundNetwork?.toString(),
+                            activeNetwork?.toString(),
+                            targetNetwork.toString(),
+                        )
+                        if (candidate?.network != targetNetwork || !switchStillNeeded) {
+                            networkSwitchRestartPending.set(false)
+                            return@synchronized
+                        }
+                    }
+                    cancelPendingNetworkSwitchReconnect()
+                    stopTunnel(keepForeground = true, expectedSession = session)
+                    runCatching { setUnderlyingNetworks(emptyArray()) }
+                        .onFailure { DiagnosticLog.append("Could not clear VPN underlying network: ${it.message}") }
+                    synchronized(lifecycleLock) { stopping.set(false) }
+                    try {
+                        publish("Reconnecting", "$reason; restarting the ZeroTier tunnel") {
+                            it.copy(
+                                tunnelActive = true,
+                                nodeReady = false,
+                                nodeState = NodeState.STARTING,
+                                networkState = VirtualNetworkState.IDLE,
+                            )
+                        }
+                        startTunnel()
+                    } finally {
+                        networkSwitchRestartPending.set(false)
+                    }
+                }
+            }
+        ) {
+            networkSwitchRestartPending.set(false)
+        }
+    }
+
+    private fun schedulePeerRefresh(session: Long, handle: Long, delayMillis: Long = 0) {
+        if (!isCurrentCore(session, handle)) return
+        try {
+            recoveryExecutor.schedule({
+                if (!isCurrentCore(session, handle)) return@schedule
+                refreshPeers(session, handle)
+                schedulePeerRefresh(session, handle, PEER_REFRESH_MILLIS)
+            }, delayMillis, TimeUnit.MILLISECONDS)
+        } catch (_: RejectedExecutionException) {
+        }
+    }
+
+    private fun refreshPeers(session: Long, handle: Long) {
+        executeCoreTask {
+            if (!isCurrentCore(session, handle)) return@executeCoreTask
+            val lines = runCatching { NativeCore.peers(handle) }.getOrNull()
+            if (!isCurrentCore(session, handle)) return@executeCoreTask
+            if (lines == null) {
+                DiagnosticLog.append("Peer query failed")
+                return@executeCoreTask
+            }
+            val peers = parsePeerLines(lines)
+            TunnelState.update { current ->
+                if (isCurrentCore(session, handle)) {
+                    current.copy(peers = peers, peersQueried = true)
+                } else {
+                    current
+                }
+            }
+        }
+    }
+
+    private fun applyNetworkConfig(
+        session: Long,
+        handle: Long,
+        networkId: Long,
+        operation: Int,
+        status: Int,
+        parsedConfig: NetworkConfig?,
+    ): Int {
+        if (!isCurrentCore(session, handle) || networkId != this.networkId) return 0
         if (operation == 3 || operation == 4) {
-            config = null
-            closeTunInterface()
-            TunnelState.update { it.copy(assignedAddresses = emptyList(), activeRoutes = emptyList()) }
+            if (!setConfigForCore(session, handle, null)) return 0
+            closeTunInterface(session, handle)
+            updateStateForCore(session, handle) {
+                it.copy(
+                    assignedAddresses = emptyList(),
+                    activeRoutes = emptyList(),
+                    networkState = if (operation == 4) VirtualNetworkState.LEFT else VirtualNetworkState.PENDING,
+                )
+            }
             if (operation == 4) {
-                publish("Disconnected", "Left ZeroTier network") {
+                publishForCore(session, handle, "Disconnected", "Left ZeroTier network") {
                     it.copy(networkName = "", assignedAddresses = emptyList(), activeRoutes = emptyList())
                 }
             }
             return 0
         }
         return try {
-            val updated = NetworkConfig.parse(configJson)
+            val updated = parsedConfig ?: return 22
+            if (!isCurrentCore(session, handle)) return 0
             if (updated.status == 1) {
                 val activeRoutes = effectiveRoutes(updated)
                 if (requiresTunUpdate(config, updated)) {
-                    applyVpnConfig(updated)
-                } else {
-                    config = updated
+                    if (!applyVpnConfig(session, handle, updated)) return 0
+                } else if (!setConfigForCore(session, handle, updated)) {
+                    return 0
                 }
-                subscribeNetworkGroups(updated)
-                publish("Connected", "Authorized virtual network") {
+                if (!isCurrentCore(session, handle)) return 0
+                subscribeNetworkGroups(updated, session, handle)
+                publishForCore(session, handle, "Connected", "Authorized virtual network") {
                     it.copy(
                         networkId = networkIdText,
                         networkName = updated.name,
+                        networkState = VirtualNetworkState.AUTHORIZED,
                         assignedAddresses = updated.addresses.map { address -> "${address.address}/${address.prefix}" },
                         activeRoutes = activeRoutes.map { route ->
                             "${route.address}/${route.prefix} via ${route.gateway ?: "direct"}"
@@ -390,12 +1260,13 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
                     )
                 }
             } else {
-                config = null
-                closeTunInterface()
-                publish(statusText(updated.status), "Waiting for network authorization") {
+                if (!setConfigForCore(session, handle, null)) return 0
+                closeTunInterface(session, handle)
+                publishForCore(session, handle, statusText(updated.status), "Waiting for network authorization") {
                     it.copy(
                         networkId = networkIdText,
                         networkName = updated.name,
+                        networkState = networkStateFor(updated.status),
                         assignedAddresses = emptyList(),
                         activeRoutes = emptyList(),
                     )
@@ -403,13 +1274,27 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
             }
             0
         } catch (exception: Exception) {
-            config = null
-            closeTunInterface()
-            publish("Configuration error", exception.message ?: "Invalid network configuration") {
-                it.copy(assignedAddresses = emptyList(), activeRoutes = emptyList())
+            if (!setConfigForCore(session, handle, null)) return 0
+            closeTunInterface(session, handle)
+            publishForCore(session, handle, "Configuration error", exception.message ?: "Invalid network configuration") {
+                it.copy(
+                    assignedAddresses = emptyList(),
+                    activeRoutes = emptyList(),
+                    networkState = VirtualNetworkState.CONFIG_ERROR,
+                )
             }
             22
         }
+    }
+
+    private fun networkStateFor(status: Int): VirtualNetworkState = when (status) {
+        1 -> VirtualNetworkState.AUTHORIZED
+        2 -> VirtualNetworkState.ACCESS_DENIED
+        3 -> VirtualNetworkState.NOT_FOUND
+        4 -> VirtualNetworkState.PORT_ERROR
+        5 -> VirtualNetworkState.CLIENT_TOO_OLD
+        6 -> VirtualNetworkState.AUTH_REQUIRED
+        else -> VirtualNetworkState.PENDING
     }
 
     private fun effectiveRoutes(config: NetworkConfig): List<RouteConfig> =
@@ -423,10 +1308,11 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
                 current.dnsDomain != updated.dnsDomain ||
                 current.mtu != updated.mtu
 
-    private fun applyVpnConfig(config: NetworkConfig) {
+    private fun applyVpnConfig(session: Long, handle: Long, config: NetworkConfig): Boolean {
         val builder = Builder()
             .setSession("Lunavane")
             .setMtu(config.mtu.coerceIn(576, 9000))
+            .setUnderlyingNetworks(socketNetwork?.let { arrayOf(it) } ?: emptyArray())
             .setBlocking(true)
         for (address in config.addresses) {
             builder.addAddress(address.address, address.prefix.coerceIn(1, if (address.address.contains(':')) 128 else 32))
@@ -438,59 +1324,81 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         if (config.dnsDomain.isNotBlank()) builder.addSearchDomain(config.dnsDomain)
         builder.addDisallowedApplication(packageName)
         val descriptor = builder.establish() ?: error("Android did not establish the VPN interface")
-        synchronized(tunOutputLock) {
-            closeTunInterface()
-            tun = descriptor
-            val input = FileInputStream(descriptor.fileDescriptor)
-            tunInput = input
-            tunOutput = FileOutputStream(descriptor.fileDescriptor)
-            this.config = config
-            tunReader = thread(name = "ZeroTier-tun") { readTunPackets(input) }
+        val installed = synchronized(tunOutputLock) {
+            synchronized(lifecycleLock) {
+                if (!isCurrentCore(session, handle)) {
+                    runCatching { descriptor.close() }
+                    false
+                } else {
+                    closeTunInterfaceLocked()
+                    tun = descriptor
+                    val input = FileInputStream(descriptor.fileDescriptor)
+                    tunInput = input
+                    tunOutput = FileOutputStream(descriptor.fileDescriptor)
+                    this.config = config
+                    tunReader = thread(name = "ZeroTier-tun-$session") { readTunPackets(input, session, handle) }
+                    true
+                }
+            }
         }
-        updateNotification("Connected to ${config.name.ifBlank { networkIdText }}")
+        if (installed && isCurrentCore(session, handle)) {
+            val underlying = socketNetwork?.let { arrayOf(it) } ?: emptyArray()
+            updateUnderlyingNetworksForCore(session, handle, underlying)
+        }
+        return installed
     }
 
-    private fun closeTunInterface() {
+    private fun closeTunInterface(session: Long? = null, handle: Long? = null) {
         synchronized(tunOutputLock) {
-            val reader = tunReader
-            tunReader = null
-            val input = tunInput
-            val output = tunOutput
-            val descriptor = tun
-            tunInput = null
-            tunOutput = null
-            tun = null
-            runCatching { input?.close() }
-            runCatching { output?.close() }
-            runCatching { descriptor?.close() }
-            reader?.interrupt()
+            if (session != null && handle != null && !isCurrentCore(session, handle)) return
+            closeTunInterfaceLocked()
         }
     }
 
-    private fun subscribeNetworkGroups(config: NetworkConfig) {
-        config.multicast.forEach { subscribe(it.mac, it.adi) }
+    private fun closeTunInterfaceLocked() {
+        val reader = tunReader
+        tunReader = null
+        val input = tunInput
+        val output = tunOutput
+        val descriptor = tun
+        tunInput = null
+        tunOutput = null
+        tun = null
+        runCatching { input?.close() }
+        runCatching { output?.close() }
+        runCatching { descriptor?.close() }
+        reader?.interrupt()
+    }
+
+    private fun subscribeNetworkGroups(config: NetworkConfig, session: Long, handle: Long) {
+        config.multicast.forEach { subscribe(it.mac, it.adi, session, handle) }
         val ipv4Addresses = config.addresses.filterNot { it.address.contains(':') }.mapNotNull {
             runCatching { InetAddress.getByName(it.address).address }.getOrNull()
         }
         ipv4Addresses.forEach { address ->
             val adi = ByteBuffer.wrap(address).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffffffffL
-            subscribe(BROADCAST_MAC, adi)
+            subscribe(BROADCAST_MAC, adi, session, handle)
         }
         config.addresses.filter { it.address.contains(':') }.mapNotNull { ipv6Bytes(it.address) }.forEach { address ->
-            subscribe(ipv6MulticastMac(solicitedNodeAddress(address)), 0)
+            subscribe(ipv6MulticastMac(solicitedNodeAddress(address)), 0, session, handle)
         }
     }
 
-    private fun subscribe(mac: Long, adi: Long) {
+    private fun subscribe(
+        mac: Long,
+        adi: Long,
+        session: Long = sessionGeneration.get(),
+        handle: Long = coreHandle.get(),
+    ) {
         val key = (mac * 0x9e3779b97f4a7c15UL.toLong()) xor adi
         if (!multicastSubscribed.add(key)) return
-        coreExecutor.execute {
-            if (stopping.get()) {
+        executeCoreTask {
+            if (!isCurrentCore(session, handle)) {
                 multicastSubscribed.remove(key)
-                return@execute
+                return@executeCoreTask
             }
             val result = runCatching {
-                NativeCore.multicastSubscribe(coreHandle, networkId, mac, adi)
+                NativeCore.multicastSubscribe(handle, networkId, mac, adi)
             }
             if (result.getOrNull() != 0) {
                 multicastSubscribed.remove(key)
@@ -500,20 +1408,21 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         }
     }
 
-    private fun readTunPackets(input: FileInputStream) {
+    private fun readTunPackets(input: FileInputStream, session: Long, handle: Long) {
         val buffer = ByteArray(65536)
-        while (!stopping.get()) {
+        while (isCurrentCore(session, handle)) {
             try {
                 val count = input.read(buffer)
                 if (count <= 0) continue
+                if (!isCurrentCore(session, handle)) break
                 val packet = buffer.copyOf(count)
                 when ((packet[0].toInt() ushr 4) and 0xf) {
-                    4 -> processIpv4Packet(packet)
-                    6 -> processIpv6Packet(packet)
+                    4 -> processIpv4Packet(packet, session, handle)
+                    6 -> processIpv6Packet(packet, session, handle)
                 }
             } catch (exception: IOException) {
-                if (!stopping.get() && tunReader === Thread.currentThread()) {
-                    publish("Tunnel error", exception.message ?: "TUN read failed")
+                if (isCurrentCore(session, handle) && tunReader === Thread.currentThread()) {
+                    publishForCore(session, handle, "Tunnel error", exception.message ?: "TUN read failed")
                 }
                 break
             }
@@ -527,35 +1436,50 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
     private fun ipv4Text(value: Long): String =
         runCatching { InetAddress.getByAddress(u32Bytes(value)).hostAddress }.getOrDefault("unknown")
 
-    private fun queuePendingIpv4(nextHop: Long, packet: ByteArray) {
+    private fun queuePendingIpv4(nextHop: Long, packet: ByteArray, session: Long, handle: Long) {
         synchronized(pendingIpv4) {
-            if (stopping.get() || pendingIpv4Count >= MAX_PENDING_PACKETS) return
+            if (!isCurrentCore(session, handle) ||
+                pendingIpv4Count >= MAX_PENDING_PACKETS ||
+                pendingIpv4Bytes + packet.size > MAX_PENDING_BYTES
+            ) {
+                return
+            }
             pendingIpv4.getOrPut(nextHop) { ArrayDeque() }.addLast(packet)
             pendingIpv4Count++
+            pendingIpv4Bytes += packet.size
         }
     }
 
     private fun takePendingIpv4(nextHop: Long): List<ByteArray> = synchronized(pendingIpv4) {
         val packets = pendingIpv4.remove(nextHop) ?: return@synchronized emptyList()
         pendingIpv4Count -= packets.size
+        pendingIpv4Bytes -= packets.sumOf(ByteArray::size)
         packets.toList()
     }
 
-    private fun queuePendingIpv6(nextHop: String, packet: ByteArray) {
+    private fun queuePendingIpv6(nextHop: String, packet: ByteArray, session: Long, handle: Long) {
         synchronized(pendingIpv6) {
-            if (stopping.get() || pendingIpv6Count >= MAX_PENDING_PACKETS) return
+            if (!isCurrentCore(session, handle) ||
+                pendingIpv6Count >= MAX_PENDING_PACKETS ||
+                pendingIpv6Bytes + packet.size > MAX_PENDING_BYTES
+            ) {
+                return
+            }
             pendingIpv6.getOrPut(nextHop) { ArrayDeque() }.addLast(packet)
             pendingIpv6Count++
+            pendingIpv6Bytes += packet.size
         }
     }
 
     private fun takePendingIpv6(nextHop: String): List<ByteArray> = synchronized(pendingIpv6) {
         val packets = pendingIpv6.remove(nextHop) ?: return@synchronized emptyList()
         pendingIpv6Count -= packets.size
+        pendingIpv6Bytes -= packets.sumOf(ByteArray::size)
         packets.toList()
     }
 
-    private fun processIpv4Packet(packet: ByteArray) {
+    private fun processIpv4Packet(packet: ByteArray, session: Long, handle: Long) {
+        if (!isCurrentCore(session, handle)) return
         val current = config ?: return
         if (packet.size < 20) return
         val destination = u32(packet, 16)
@@ -577,8 +1501,8 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
             else -> arpTable[nextHop]
         }
         if (destinationMac != null) {
-            if (multicast) subscribe(destinationMac, 0)
-            submitFrame(current.mac, destinationMac, IPV4_ETHER_TYPE, packet)
+            if (multicast) subscribe(destinationMac, 0, session, handle)
+            submitFrame(current.mac, destinationMac, IPV4_ETHER_TYPE, packet, session, handle)
             return
         }
 
@@ -586,9 +1510,9 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         val source = runCatching { InetAddress.getByName(sourceAddress.address).address }.getOrNull() ?: return
         val routeKey = route?.let { "${it.address}/${it.prefix}:${it.gateway}" } ?: "direct"
         logPacketOnce("ipv4-arp:$routeKey", "Sending ARP request for IPv4 next hop ${ipv4Text(nextHop)}")
-        queuePendingIpv4(nextHop, packet)
+        queuePendingIpv4(nextHop, packet, session, handle)
         val arp = buildArpRequest(current.mac, source, u32Bytes(nextHop))
-        submitFrame(current.mac, BROADCAST_MAC, ARP_ETHER_TYPE, arp)
+        submitFrame(current.mac, BROADCAST_MAC, ARP_ETHER_TYPE, arp, session, handle)
     }
 
     private fun ipv4RouteContains(route: RouteConfig, address: Long): Boolean {
@@ -604,15 +1528,16 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         u32(bytes, 0)
     }.getOrNull()
 
-    private fun processIpv6Packet(packet: ByteArray) {
+    private fun processIpv6Packet(packet: ByteArray, session: Long, handle: Long) {
+        if (!isCurrentCore(session, handle)) return
         val current = config ?: return
         if (packet.size < 40 || packet[0].toInt() ushr 4 != 6) return
         val destination = packet.copyOfRange(24, 40)
         val multicast = destination[0].toInt() and 0xff == 0xff
         if (multicast) {
             val destinationMac = ipv6MulticastMac(destination)
-            subscribe(destinationMac, 0)
-            submitFrame(current.mac, destinationMac, IPV6_ETHER_TYPE, packet)
+            subscribe(destinationMac, 0, session, handle)
+            submitFrame(current.mac, destinationMac, IPV6_ETHER_TYPE, packet, session, handle)
             return
         }
 
@@ -624,22 +1549,22 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         val key = ipv6Key(nextHop)
         val destinationMac = neighborTable[key]
         if (destinationMac != null) {
-            submitFrame(current.mac, destinationMac, IPV6_ETHER_TYPE, packet)
+            submitFrame(current.mac, destinationMac, IPV6_ETHER_TYPE, packet, session, handle)
             return
         }
 
-        queuePendingIpv6(key, packet)
+        queuePendingIpv6(key, packet, session, handle)
         val now = System.currentTimeMillis()
         synchronized(lastNeighborSolicitation) {
-            if (stopping.get()) return
+            if (!isCurrentCore(session, handle)) return
             val previous = lastNeighborSolicitation[key]
             if (previous == null || now - previous >= 3000) {
                 val source = packet.copyOfRange(8, 24)
                 val solicitation = buildNeighborSolicitation(source, nextHop, current.mac)
                 val solicitationDestination = solicitedNodeAddress(nextHop)
                 val multicastMac = ipv6MulticastMac(solicitationDestination)
-                subscribe(multicastMac, 0)
-                submitFrame(current.mac, multicastMac, IPV6_ETHER_TYPE, solicitation)
+                subscribe(multicastMac, 0, session, handle)
+                submitFrame(current.mac, multicastMac, IPV6_ETHER_TYPE, solicitation, session, handle)
                 lastNeighborSolicitation[key] = now
             }
         }
@@ -748,24 +1673,46 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
     private fun isNeighborDiscovery(packet: ByteArray): Boolean =
         packet.size >= 64 && packet[6].toInt() and 0xff == 58 && packet[40].toInt() and 0xff in 133..136
 
-    private fun submitFrame(sourceMac: Long, destinationMac: Long, etherType: Int, packet: ByteArray) {
-        coreExecutor.execute {
-            if (!stopping.get() && coreHandle != 0L) {
-                val result = NativeCore.processVirtualFrame(coreHandle, networkId, sourceMac, destinationMac, etherType, 0, packet)
-                if (result != 0) {
-                    val frameType = when (etherType) {
-                        ARP_ETHER_TYPE -> "ARP"
-                        IPV4_ETHER_TYPE -> "IPv4"
-                        IPV6_ETHER_TYPE -> "IPv6"
-                        else -> "Ethernet"
-                    }
-                    logPacketOnce("core-frame:$frameType:$result", "ZeroTier rejected an outgoing $frameType frame ($result)")
+    private fun submitFrame(
+        sourceMac: Long,
+        destinationMac: Long,
+        etherType: Int,
+        packet: ByteArray,
+        session: Long,
+        handle: Long,
+    ) {
+        enqueuePacketWork(session, handle, packet.size) {
+            if (!isCurrentCore(session, handle)) return@enqueuePacketWork
+            val result = NativeCore.processVirtualFrame(handle, networkId, sourceMac, destinationMac, etherType, 0, packet)
+            if (result != 0) {
+                val frameType = when (etherType) {
+                    ARP_ETHER_TYPE -> "ARP"
+                    IPV4_ETHER_TYPE -> "IPv4"
+                    IPV6_ETHER_TYPE -> "IPv6"
+                    else -> "Ethernet"
                 }
+                logPacketOnce("core-frame:$frameType:$result", "ZeroTier rejected an outgoing $frameType frame ($result)")
             }
         }
     }
 
-    override fun onVirtualFrame(
+    private fun enqueuePacketWork(session: Long, handle: Long, bytes: Int, action: () -> Unit): Boolean {
+        if (!isCurrentCore(session, handle)) return false
+        val lease = packetWorkBudget.tryAcquire(bytes) ?: return false
+        val scheduled = executeCoreTask {
+            try {
+                action()
+            } finally {
+                lease.release()
+            }
+        }
+        if (!scheduled) lease.release()
+        return scheduled
+    }
+
+    private fun handleVirtualFrame(
+        session: Long,
+        handle: Long,
         networkId: Long,
         sourceMac: Long,
         destinationMac: Long,
@@ -773,28 +1720,28 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         vlanId: Int,
         payload: ByteArray,
     ) {
-        if (networkId != this.networkId || stopping.get()) return
+        if (networkId != this.networkId || !isCurrentCore(session, handle)) return
         when (etherType) {
-            ARP_ETHER_TYPE -> handleArp(payload)
+            ARP_ETHER_TYPE -> handleArp(payload, session, handle)
             IPV4_ETHER_TYPE -> {
                 if (payload.size >= 20 && (payload[0].toInt() ushr 4) == 4) {
                     arpTable[u32(payload, 12)] = sourceMac
                     logPacketOnce("ipv4-core-inbound", "Received an IPv4 frame from ZeroTier")
                 }
-                writeTun(payload)
+                writeTun(payload, session, handle)
             }
-            IPV6_ETHER_TYPE -> handleIpv6Frame(sourceMac, payload)
+            IPV6_ETHER_TYPE -> handleIpv6Frame(sourceMac, payload, session, handle)
         }
     }
 
-    private fun handleIpv6Frame(sourceMac: Long, packet: ByteArray) {
+    private fun handleIpv6Frame(sourceMac: Long, packet: ByteArray, session: Long, handle: Long) {
         if (packet.size < 40 || packet[0].toInt() ushr 4 != 6) return
         val source = packet.copyOfRange(8, 24)
         if (isNeighborDiscovery(packet)) {
             when (packet[40].toInt() and 0xff) {
-                135 -> answerNeighborSolicitation(sourceMac, packet)
-                136 -> learnNeighborAdvertisement(sourceMac, packet)
-                else -> writeTun(packet)
+                135 -> answerNeighborSolicitation(sourceMac, packet, session, handle)
+                136 -> learnNeighborAdvertisement(sourceMac, packet, session, handle)
+                else -> writeTun(packet, session, handle)
             }
             return
         }
@@ -805,14 +1752,14 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
             val current = config
             if (current != null) {
                 takePendingIpv6(key).forEach { pending ->
-                    submitFrame(current.mac, sourceMac, IPV6_ETHER_TYPE, pending)
+                    submitFrame(current.mac, sourceMac, IPV6_ETHER_TYPE, pending, session, handle)
                 }
             }
         }
-        writeTun(packet)
+        writeTun(packet, session, handle)
     }
 
-    private fun answerNeighborSolicitation(sourceMac: Long, packet: ByteArray) {
+    private fun answerNeighborSolicitation(sourceMac: Long, packet: ByteArray, session: Long, handle: Long) {
         if (packet.size < 64) return
         val current = config ?: return
         val target = packet.copyOfRange(48, 64)
@@ -830,10 +1777,10 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         } else source
         val destinationMac = if (dad) 0x333300000001L else sourceMac
         val advertisement = buildNeighborAdvertisement(ownAddress, destination, ownAddress, current.mac, !dad)
-        submitFrame(current.mac, destinationMac, IPV6_ETHER_TYPE, advertisement)
+        submitFrame(current.mac, destinationMac, IPV6_ETHER_TYPE, advertisement, session, handle)
     }
 
-    private fun learnNeighborAdvertisement(sourceMac: Long, packet: ByteArray) {
+    private fun learnNeighborAdvertisement(sourceMac: Long, packet: ByteArray, session: Long, handle: Long) {
         if (packet.size < 64) return
         val target = packet.copyOfRange(48, 64)
         var targetMac = sourceMac
@@ -853,11 +1800,11 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         lastNeighborSolicitation.remove(key)
         val current = config ?: return
         takePendingIpv6(key).forEach { pending ->
-            submitFrame(current.mac, targetMac, IPV6_ETHER_TYPE, pending)
+            submitFrame(current.mac, targetMac, IPV6_ETHER_TYPE, pending, session, handle)
         }
     }
 
-    private fun handleArp(packet: ByteArray) {
+    private fun handleArp(packet: ByteArray, session: Long, handle: Long) {
         if (packet.size < 28 || packet[4].toInt() != 6 || packet[5].toInt() != 4) return
         val current = config ?: return
         val senderMac = u48(packet, 8)
@@ -874,7 +1821,7 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
                 "ARP resolved IPv4 next hop ${ipv4Text(senderIp)}; forwarding ${pendingPackets.size} queued packet(s)",
             )
             pendingPackets.forEach { pending ->
-                submitFrame(current.mac, senderMac, IPV4_ETHER_TYPE, pending)
+                submitFrame(current.mac, senderMac, IPV4_ETHER_TYPE, pending, session, handle)
             }
         }
         val targetIp = u32(packet, 24)
@@ -886,7 +1833,7 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         val targetBytes = runCatching { InetAddress.getByName(own.address).address }.getOrNull() ?: return
         val senderBytes = packet.copyOfRange(14, 18)
         val reply = buildArpReply(current.mac, targetBytes, senderMac, senderBytes)
-        submitFrame(current.mac, senderMac, ARP_ETHER_TYPE, reply)
+        submitFrame(current.mac, senderMac, ARP_ETHER_TYPE, reply, session, handle)
     }
 
     private fun buildArpRequest(sourceMac: Long, sourceIp: ByteArray, targetIp: ByteArray): ByteArray =
@@ -915,50 +1862,259 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
             put(destinationIp)
         }.array()
 
-    private fun writeTun(packet: ByteArray) {
-        val generation = sessionGeneration.get()
-        packetExecutor.execute {
-            synchronized(tunOutputLock) {
-                if (generation != sessionGeneration.get()) return@synchronized
+    private fun writeTun(packet: ByteArray, session: Long, handle: Long) {
+        if (!isCurrentCore(session, handle)) return
+        val lease = packetWorkBudget.tryAcquire(packet.size) ?: run {
+            logPacketOnce("packet-work-budget", "Dropped packet work because the bounded packet queue is full")
+            return
+        }
+        val scheduled = executePacketTask {
+            try {
+                if (!isCurrentCore(session, handle)) return@executePacketTask
                 val ipv4 = packet.isNotEmpty() && (packet[0].toInt() ushr 4) == 4
-                val output = tunOutput
+                val output = synchronized(tunOutputLock) {
+                    if (isCurrentCore(session, handle)) tunOutput else null
+                }
                 if (output == null) {
                     if (ipv4) logPacketOnce("ipv4-tun-output-unavailable", "Dropped an inbound IPv4 packet because the TUN output is unavailable")
-                    return@synchronized
+                    return@executePacketTask
                 }
                 try {
                     output.write(packet)
                     if (ipv4) logPacketOnce("ipv4-tun-write", "Wrote an inbound IPv4 packet to the Android TUN")
                 } catch (exception: IOException) {
-                    if (!stopping.get()) publish("Tunnel error", exception.message ?: "TUN write failed")
+                    if (isCurrentCore(session, handle) && tunOutput === output) {
+                        publishForCore(session, handle, "Tunnel error", exception.message ?: "TUN write failed")
+                    }
+                }
+            } finally {
+                lease.release()
+            }
+        }
+        if (!scheduled) lease.release()
+    }
+
+    private fun installDefaultRouteSocket(
+        session: Long,
+        handle: Long,
+        failedChannel: DatagramChannel?,
+        expectedNetwork: Network?,
+    ): DefaultRouteFallbackOutcome {
+        val stillRelevant = synchronized(lifecycleLock) {
+            if (!isCurrentCore(session, handle) || stopping.get()) {
+                false
+            } else {
+                synchronized(udpSocketLock) {
+                    failedChannel != null && udpChannel === failedChannel &&
+                        socketNetwork == expectedNetwork && socketBoundToNetwork
                 }
             }
         }
+        if (!stillRelevant) return DefaultRouteFallbackOutcome.OBSOLETE
+        val network = expectedNetwork ?: return DefaultRouteFallbackOutcome.OBSOLETE
+
+        val prepared = try {
+            prepareUdpSocket(null)
+        } catch (exception: Exception) {
+            DiagnosticLog.append("Could not create a default-route UDP socket: ${exception.message}")
+            return DefaultRouteFallbackOutcome.FAILED
+        }
+        var installedPrepared = false
+        var installFailed = false
+        val installed = synchronized(lifecycleLock) {
+            if (!isCurrentCore(session, handle) || stopping.get()) {
+                false
+            } else {
+                synchronized(udpSocketLock) {
+                    if (udpChannel !== failedChannel || socketNetwork != network || !socketBoundToNetwork) {
+                        false
+                    } else {
+                        closeUdpSocketLocked()
+                        try {
+                            bindPreparedUdpSocket(prepared)
+                            installPreparedUdpSocketLocked(prepared, network, session, handle)
+                            installedPrepared = true
+                            true
+                        } catch (exception: Exception) {
+                            installFailed = true
+                            DiagnosticLog.append("Could not install a default-route UDP socket: ${exception.message}")
+                            false
+                        }
+                    }
+                }
+            }
+        }
+        if (!installedPrepared) closePreparedUdpSocket(prepared)
+        return when {
+            installed || installedPrepared -> DefaultRouteFallbackOutcome.INSTALLED
+            installFailed -> DefaultRouteFallbackOutcome.FAILED
+            else -> DefaultRouteFallbackOutcome.OBSOLETE
+        }
     }
 
-    override fun onWirePacket(address: ByteArray, port: Int, packet: ByteArray) {
-        val socket = udp ?: return
-        if (stopping.get()) return
-        try {
-            socket.send(DatagramPacket(packet, packet.size, InetAddress.getByAddress(address), port))
-        } catch (exception: IOException) {
-            if (!stopping.get() && udp === socket) {
-                publish("Degraded", "UDP send failed: ${exception.message}")
+    private fun scheduleDefaultRouteFallback(
+        session: Long,
+        handle: Long,
+        failedChannel: DatagramChannel?,
+        expectedNetwork: Network?,
+    ) {
+        if (!isCurrentCore(session, handle) || !defaultRouteFallbackPending.compareAndSet(false, true)) return
+        val scheduled = try {
+            networkAttemptExecutor.execute {
+                try {
+                    when (installDefaultRouteSocket(session, handle, failedChannel, expectedNetwork)) {
+                        DefaultRouteFallbackOutcome.INSTALLED ->
+                            DiagnosticLog.append("UDP socket cannot reach its bound network; using the protected default route")
+                        DefaultRouteFallbackOutcome.FAILED -> {
+                            logPacketOnce(
+                                "default-route-fallback",
+                                "Could not switch the ZeroTier UDP socket to the default route",
+                            )
+                            invalidateUdpSocket(session, handle, failedChannel)
+                            notifyTransportFailure(session, handle)
+                        }
+                        DefaultRouteFallbackOutcome.OBSOLETE -> Unit
+                    }
+                } finally {
+                    defaultRouteFallbackPending.set(false)
+                }
+            }
+            true
+        } catch (_: RejectedExecutionException) {
+            false
+        }
+        if (!scheduled) defaultRouteFallbackPending.set(false)
+    }
+
+    private fun sendWirePacket(
+        session: Long,
+        handle: Long,
+        address: ByteArray,
+        port: Int,
+        packet: ByteArray,
+    ): Boolean {
+        val socket = udp
+        val channel = udpChannel
+        val result = attemptWirePacketSend(
+            sessionIsCurrent = { isCurrentCore(session, handle) },
+            stopping = stopping::get,
+            socketState = {
+                when {
+                    socket == null || channel == null -> WirePacketSocketState.MISSING
+                    udp !== socket || udpChannel !== channel -> WirePacketSocketState.REPLACED
+                    socket.isClosed || !channel.isOpen -> WirePacketSocketState.CLOSED
+                    else -> WirePacketSocketState.READY
+                }
+            },
+            send = {
+                channel!!.send(
+                    ByteBuffer.wrap(packet),
+                    InetSocketAddress(InetAddress.getByAddress(address), port),
+                ) == packet.size
+            },
+        )
+        return when (result) {
+            WirePacketSendResult.Sent -> {
+                clearWireSendFailure(session, handle)
+                true
+            }
+            WirePacketSendResult.StaleSession,
+            WirePacketSendResult.Stopping -> false
+            WirePacketSendResult.SocketUnavailable -> {
+                reportWireSendFailure(session, handle, "socket-unavailable", "No UDP socket is available")
+                notifyTransportFailure(session, handle)
+                false
+            }
+            WirePacketSendResult.SocketClosed -> {
+                reportWireSendFailure(session, handle, "socket-closed", "UDP socket is closed")
+                if (isCurrentCore(session, handle)) {
+                    invalidateUdpSocket(session, handle, channel)
+                    notifyTransportFailure(session, handle)
+                }
+                false
+            }
+            WirePacketSendResult.SocketReplaced -> {
+                reportWireSendFailure(session, handle, "socket-replaced", "UDP socket changed during send")
+                false
+            }
+            is WirePacketSendResult.Failed -> {
+                if (socket != null && channel != null && udp === socket && udpChannel === channel &&
+                    shouldFallbackToDefaultRoute(result.category, socketBoundToNetwork)
+                ) {
+                    scheduleDefaultRouteFallback(session, handle, channel, socketNetwork)
+                    return false
+                }
+                val category = result.category.name.lowercase().replace('_', '-')
+                reportWireSendFailure(session, handle, category, result.message)
+                if (result.category in RECOVERABLE_WIRE_FAILURES && isCurrentCore(session, handle)) {
+                    invalidateUdpSocket(session, handle, channel)
+                    notifyTransportFailure(session, handle)
+                }
+                false
             }
         }
     }
 
-    override fun onNodeEvent(eventType: Int, message: String) {
+    private fun notifyTransportFailure(session: Long, handle: Long) {
+        val recovery = synchronized(lifecycleLock) {
+            if (isCurrentCore(session, handle)) networkRecovery else null
+        }
+        recovery?.onTransportFailure()
+    }
+
+    private fun notifyTransportSuccess(session: Long, handle: Long) {
+        val recovery = synchronized(lifecycleLock) {
+            if (isCurrentCore(session, handle)) networkRecovery else null
+        }
+        recovery?.onTransportSuccess()
+    }
+
+    private fun reportWireSendFailure(session: Long, handle: Long, category: String, detail: String): Boolean {
+        val shouldReport = synchronized(lifecycleLock) {
+            if (!isCurrentCore(session, handle) || lastWireFailureCategory == category) {
+                false
+            } else {
+                lastWireFailureCategory = category
+                true
+            }
+        }
+        if (!shouldReport) return false
+        executePacketTask {
+            publishForCore(session, handle, "Degraded", "UDP send failed ($category): $detail")
+        }
+        return false
+    }
+
+    private fun clearWireSendFailure(session: Long, handle: Long) {
+        val previousCategory = synchronized(lifecycleLock) {
+            if (!isCurrentCore(session, handle)) return
+            lastWireFailureCategory.also { lastWireFailureCategory = null }
+        } ?: return
+        executePacketTask {
+            DiagnosticLog.append("UDP send recovered after $previousCategory")
+            publishForCoreIf(
+                session,
+                handle,
+                "Connected",
+                "UDP send recovered after $previousCategory",
+                shouldPublish = {
+                    it.status == "Degraded" && it.networkState == VirtualNetworkState.AUTHORIZED
+                },
+            )
+        }
+        notifyTransportSuccess(session, handle)
+    }
+
+    private fun handleNodeEvent(session: Long, handle: Long, eventType: Int, message: String) {
+        if (!isCurrentCore(session, handle)) return
         when (eventType) {
-            0 -> publish("Starting", "ZeroTier node initialized")
-            1 -> publish("Offline", "No upstream route currently available")
-            2 -> publish("Online", "ZeroTier upstream reachable")
-            else -> if (message.isNotBlank()) publish("Node event", message)
+            0 -> publishForCore(session, handle, "Starting", "ZeroTier node initialized")
+            1 -> publishForCore(session, handle, "Offline", "No upstream route currently available")
+            2 -> publishForCore(session, handle, "Online", "ZeroTier upstream reachable")
+            else -> if (message.isNotBlank()) publishForCore(session, handle, "Node event", message)
         }
         if (message.matches(Regex("[0-9a-f]{10}"))) {
-            publish(TunnelState.state.value.status, TunnelState.state.value.detail) {
-                it.copy(nodeAddress = message)
-            }
+            updateStateForCore(session, handle) { it.copy(nodeAddress = message) }
         }
     }
 
@@ -972,10 +2128,127 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         else -> "Network pending"
     }
 
-    private fun publish(status: String, detail: String, transform: (TunnelUiState) -> TunnelUiState = { it }) {
-        TunnelState.update { transform(it.copy(status = status, detail = detail, networkId = networkIdText)) }
+    private fun publishRecoveryStatus(
+        session: Long,
+        handle: Long,
+        sequence: Long,
+        status: String,
+        detail: String,
+        shouldPublish: (TunnelUiState) -> Boolean,
+    ) {
+        synchronized(lifecycleLock) {
+            if (!isCurrentCore(session, handle)) return
+            var applied = false
+            TunnelState.update { current ->
+                if (isCurrentCore(session, handle) &&
+                    current.recoveryPhaseSequence == sequence &&
+                    shouldPublish(current)
+                ) {
+                    applied = true
+                    current.copy(status = status, detail = detail, networkId = networkIdText)
+                } else {
+                    applied = false
+                    current
+                }
+            }
+            if (applied) {
+                DiagnosticLog.append("$status: $detail")
+                scheduleNotificationUpdate(session)
+            }
+        }
+    }
+
+    private fun publishForCore(
+        session: Long,
+        handle: Long,
+        status: String,
+        detail: String,
+        transform: (TunnelUiState) -> TunnelUiState = { it },
+    ): Boolean = publishForSession(session, handle, status, detail, transform)
+
+    private fun publishForCoreIf(
+        session: Long,
+        handle: Long,
+        status: String,
+        detail: String,
+        shouldPublish: (TunnelUiState) -> Boolean,
+        transform: (TunnelUiState) -> TunnelUiState = { it },
+    ): Boolean = synchronized(lifecycleLock) {
+        if (!isCurrentCore(session, handle)) return@synchronized false
+        var applied = false
+        TunnelState.update { state ->
+            if (isCurrentCore(session, handle) && shouldPublish(state)) {
+                applied = true
+                transform(state.copy(status = status, detail = detail, networkId = networkIdText))
+            } else {
+                applied = false
+                state
+            }
+        }
+        if (applied) {
+            DiagnosticLog.append("$status: $detail")
+            scheduleNotificationUpdate(session)
+        }
+        applied
+    }
+
+    private fun publishForSession(
+        session: Long,
+        handle: Long?,
+        status: String,
+        detail: String,
+        transform: (TunnelUiState) -> TunnelUiState = { it },
+    ): Boolean = synchronized(lifecycleLock) {
+        val current = if (handle == null) isCurrentSession(session) else isCurrentCore(session, handle)
+        if (!current) return@synchronized false
+        TunnelState.update { state ->
+            val stillCurrent = if (handle == null) isCurrentSession(session) else isCurrentCore(session, handle)
+            if (stillCurrent) transform(state.copy(status = status, detail = detail, networkId = networkIdText)) else state
+        }
         DiagnosticLog.append("$status: $detail")
-        updateNotification(status)
+        scheduleNotificationUpdate(session)
+        true
+    }
+
+    private fun updateStateForCore(
+        session: Long,
+        handle: Long,
+        transform: (TunnelUiState) -> TunnelUiState,
+    ): Boolean = synchronized(lifecycleLock) {
+        if (!isCurrentCore(session, handle)) return@synchronized false
+        var applied = false
+        TunnelState.update { state ->
+            if (isCurrentCore(session, handle)) {
+                applied = true
+                transform(state)
+            } else {
+                applied = false
+                state
+            }
+        }
+        applied
+    }
+
+    private fun setConfigForCore(session: Long, handle: Long, value: NetworkConfig?): Boolean =
+        synchronized(lifecycleLock) {
+            if (!isCurrentCore(session, handle)) return@synchronized false
+            config = value
+            true
+        }
+
+    private fun publish(status: String, detail: String, transform: (TunnelUiState) -> TunnelUiState = { it }) {
+        synchronized(lifecycleLock) {
+            TunnelState.update { transform(it.copy(status = status, detail = detail, networkId = networkIdText)) }
+            DiagnosticLog.append("$status: $detail")
+            scheduleNotificationUpdate(sessionGeneration.get())
+        }
+    }
+
+    private fun scheduleNotificationUpdate(session: Long) {
+        mainHandler.post {
+            if (sessionGeneration.get() != session || stopping.get()) return@post
+            updateNotification(TunnelState.state.value.status)
+        }
     }
 
     private fun updateNotification(text: String) {
@@ -1006,23 +2279,46 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         )
     }
 
-    private fun stopTunnel(keepForeground: Boolean = false) {
-        sessionGeneration.incrementAndGet()
-        if (!stopping.compareAndSet(false, true)) {
+    @Synchronized
+    private fun stopTunnel(keepForeground: Boolean = false, expectedSession: Long? = null) {
+        cancelPendingNetworkSwitchReconnect()
+        networkSwitchDebouncePending.set(false)
+        val handleToStop = synchronized(lifecycleLock) {
+            if (expectedSession != null && sessionGeneration.get() != expectedSession) return
+            sessionGeneration.incrementAndGet()
+            selectedNetwork = null
+            lastBoundNetwork = null
+            activeUnderlayWasLost = false
+            networkSwitchRestartPending.set(false)
+            if (!stopping.compareAndSet(false, true)) null else coreHandle.take()
+        }
+        synchronized(networkSwitchStateLock) {
+            hasObservedCandidateKey = false
+            lastObservedCandidateKey = null
+        }
+        if (handleToStop == null) {
             if (!keepForeground) stopSelf()
             return
         }
+        clearUnderlyingNetworksAfterStop()
+        networkRecovery?.stop()
+        networkRecovery = null
         val manager = getSystemService(ConnectivityManager::class.java)
-        runCatching { networkCallback?.let(manager::unregisterNetworkCallback) }
-        networkCallback = null
+        val callback = synchronized(networkCallbackLock) {
+            val current = networkCallback
+            networkCallback = null
+            current
+        }
+        runCatching { callback?.let(manager::unregisterNetworkCallback) }
+        synchronized(networkCandidateLock) {
+            networkCandidates.clear()
+            networkObservations.clear()
+        }
         synchronized(udpSocketLock) {
             selectedNetwork = null
-            socketNetwork = null
-            val socket = udp
-            udp = null
-            udpReader?.interrupt()
-            udpReader = null
-            socket?.close()
+            lastBindFallbackNanos = 0L
+            sessionBoundNetworks.clear()
+            closeUdpSocketLocked()
         }
         closeTunInterface()
         config = null
@@ -1030,27 +2326,29 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
         synchronized(pendingIpv4) {
             pendingIpv4.clear()
             pendingIpv4Count = 0
+            pendingIpv4Bytes = 0
         }
         neighborTable.clear()
         synchronized(pendingIpv6) {
             pendingIpv6.clear()
             pendingIpv6Count = 0
+            pendingIpv6Bytes = 0
         }
         synchronized(lastNeighborSolicitation) {
             lastNeighborSolicitation.clear()
         }
         multicastSubscribed.clear()
         packetDiagnosticKeys.clear()
+        lastWireFailureCategory = null
         val networkToLeave = networkIdText
-        coreExecutor.execute {
-            val handle = coreHandle
-            if (handle != 0L) {
-                if (networkToLeave.length == 16) NativeCore.leave(handle, networkToLeave)
-                NativeCore.destroy(handle)
-                coreHandle = 0L
+        executeCoreTask {
+            if (handleToStop != 0L) {
+                if (networkToLeave.length == 16) NativeCore.leave(handleToStop, networkToLeave)
+                NativeCore.destroy(handleToStop)
+                coreHandle.clearIf(handleToStop)
             }
         }
-        TunnelState.reset()
+        synchronized(lifecycleLock) { TunnelState.reset() }
         DiagnosticLog.append("Tunnel stopped")
         if (!keepForeground) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -1065,8 +2363,11 @@ class ZeroTierVpnService : VpnService(), NativeCallbacks {
 
     override fun onDestroy() {
         stopTunnel()
+        networkConfigExecutor.shutdown()
+        networkAttemptExecutor.shutdownNow()
         coreExecutor.shutdown()
         packetExecutor.shutdown()
+        recoveryExecutor.shutdownNow()
         super.onDestroy()
     }
 

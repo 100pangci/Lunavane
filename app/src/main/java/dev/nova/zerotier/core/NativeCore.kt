@@ -22,4 +22,7 @@ internal object NativeCore {
         payload: ByteArray,
     ): Int
     external fun multicastSubscribe(handle: Long, networkId: Long, mac: Long, adi: Long): Int
+    external fun peers(handle: Long): Array<String>?
+    external fun nodeAddress(handle: Long): String?
+    external fun moonFileStatus(handle: Long, moonWorldId: String): Int
 }
