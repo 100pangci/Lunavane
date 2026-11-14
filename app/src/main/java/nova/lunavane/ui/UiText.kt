@@ -138,6 +138,8 @@ internal fun moonOperationLabel(operation: MoonOperation): String = when (operat
     MoonOperationType.ORBIT -> when (operation.outcome) {
         MoonOperationOutcome.ACCEPTED -> stringResource(R.string.moon_orbit_accepted)
         MoonOperationOutcome.ACCEPTED_NOT_SAVED -> stringResource(R.string.moon_orbit_accepted_not_saved)
+        MoonOperationOutcome.SAVED_PENDING -> stringResource(R.string.moon_orbit_saved_pending)
+        MoonOperationOutcome.SAVE_FAILED -> stringResource(R.string.moon_save_failed)
         MoonOperationOutcome.REJECTED -> stringResource(
             R.string.moon_orbit_rejected,
             operation.coreCode ?: -1,
@@ -159,6 +161,11 @@ internal fun moonOperationLabel(operation: MoonOperation): String = when (operat
         MoonOperationOutcome.INVALID_INPUT -> stringResource(R.string.moon_deorbit_invalid)
         else -> stringResource(R.string.moon_operation_unknown)
     }
+    MoonOperationType.LOCAL_REMOVE -> when (operation.outcome) {
+        MoonOperationOutcome.LOCAL_REMOVED -> stringResource(R.string.moon_local_remove_accepted)
+        MoonOperationOutcome.LOCAL_REMOVE_FAILED -> stringResource(R.string.moon_local_remove_failed)
+        else -> stringResource(R.string.moon_operation_unknown)
+    }
     MoonOperationType.RESTORE -> when (operation.outcome) {
         MoonOperationOutcome.ACCEPTED -> pluralStringResource(
             R.plurals.moon_restored,
@@ -175,8 +182,13 @@ internal fun moonOperationLabel(operation: MoonOperation): String = when (operat
 }
 
 internal fun moonOperationIsWarning(operation: MoonOperation): Boolean = when (operation.outcome) {
-    MoonOperationOutcome.ACCEPTED -> false
+    MoonOperationOutcome.ACCEPTED,
+    MoonOperationOutcome.SAVED_PENDING,
+    MoonOperationOutcome.LOCAL_REMOVED,
+    -> false
     MoonOperationOutcome.ACCEPTED_NOT_SAVED,
+    MoonOperationOutcome.SAVE_FAILED,
+    MoonOperationOutcome.LOCAL_REMOVE_FAILED,
     MoonOperationOutcome.PARTIAL,
     MoonOperationOutcome.REJECTED,
     MoonOperationOutcome.FILE_REMAINS,
