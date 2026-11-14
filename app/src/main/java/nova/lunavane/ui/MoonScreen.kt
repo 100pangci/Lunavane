@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -48,9 +49,11 @@ internal fun MoonScreen(
     state: TunnelUiState,
     onOrbit: (String, String) -> Unit,
     onDeorbit: (String) -> Unit,
+    onRemoveLocally: (String) -> Unit,
 ) {
     var worldId by rememberSaveable { mutableStateOf("") }
     var seed by rememberSaveable { mutableStateOf("") }
+    var statusInfoExpanded by rememberSaveable { mutableStateOf(false) }
     val moonAvailable = state.tunnelActive && state.nodeReady
     val worldIdValid = isValidMoonWorldId(worldId)
     val seedValid = isValidMoonSeed(seed)
@@ -65,6 +68,40 @@ internal fun MoonScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         item {
+            SectionHeader(
+                title = stringResource(R.string.moon_saved_title),
+                trailing = {
+                    if (state.moonSeeds.isNotEmpty()) {
+                        StatusPill(
+                            text = pluralStringResource(
+                                R.plurals.moon_saved_requests,
+                                state.moonSeeds.size,
+                                state.moonSeeds.size,
+                            ),
+                        )
+                    }
+                },
+            )
+        }
+        if (groups.isEmpty()) {
+            item {
+                SectionCard { EmptyMessage(stringResource(R.string.moon_saved_empty)) }
+            }
+        } else {
+            groups.forEach { group ->
+                item(key = group.worldId) {
+                    MoonWorldCard(
+                        group = group,
+                        state = state,
+                        deorbitEnabled = moonAvailable,
+                        onDeorbit = onDeorbit,
+                        onRemoveLocally = onRemoveLocally,
+                    )
+                }
+            }
+        }
+
+        item {
             SectionCard(title = stringResource(R.string.moon_orbit_title)) {
                 Text(
                     text = stringResource(R.string.moon_intro),
@@ -78,7 +115,6 @@ internal fun MoonScreen(
                     label = { Text(stringResource(R.string.moon_world_id_label)) },
                     supportingText = { Text(stringResource(R.string.moon_world_id_hint)) },
                     singleLine = true,
-                    enabled = moonAvailable,
                     textStyle = TextStyle(fontFamily = FontFamily.Monospace),
                 )
                 OutlinedTextField(
@@ -88,18 +124,21 @@ internal fun MoonScreen(
                     label = { Text(stringResource(R.string.moon_seed_label)) },
                     supportingText = { Text(stringResource(R.string.moon_seed_hint)) },
                     singleLine = true,
-                    enabled = moonAvailable,
                     textStyle = TextStyle(fontFamily = FontFamily.Monospace),
                 )
                 Button(
                     onClick = { onOrbit(worldId, seed) },
-                    enabled = moonAvailable && worldIdValid && seedValid,
+                    enabled = worldIdValid && seedValid,
                 ) {
-                    Text(stringResource(R.string.action_orbit))
+                    Text(
+                        stringResource(
+                            if (moonAvailable) R.string.moon_save_and_orbit else R.string.moon_save_for_later,
+                        ),
+                    )
                 }
                 if (!moonAvailable) {
                     Text(
-                        text = stringResource(R.string.moon_unavailable),
+                        text = stringResource(R.string.moon_offline_save_hint),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -151,71 +190,43 @@ internal fun MoonScreen(
                             )
                         }
                     } else {
-                        Text(
-                            text = state.moonMessage,
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
+                        Text(text = state.moonMessage, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
         }
 
         item {
-            SectionCard(title = stringResource(R.string.moon_status_legend_title)) {
-                LegendItem(
-                    title = stringResource(R.string.moon_status_orbit),
-                    body = stringResource(R.string.moon_status_orbit_desc),
-                )
-                LegendItem(
-                    title = stringResource(R.string.moon_status_seed),
-                    body = stringResource(R.string.moon_status_seed_desc),
-                )
-                LegendItem(
-                    title = stringResource(R.string.moon_status_definition),
-                    body = stringResource(R.string.moon_status_definition_desc),
-                )
-            }
-        }
-
-        item {
-            SectionHeader(
-                title = stringResource(R.string.moon_saved_title),
-                trailing = {
-                    if (state.moonSeeds.isNotEmpty()) {
-                        StatusPill(
-                            text = pluralStringResource(
-                                R.plurals.moon_saved_requests,
-                                state.moonSeeds.size,
-                                state.moonSeeds.size,
+            SectionCard(
+                title = stringResource(R.string.moon_status_legend_title),
+                action = {
+                    TextButton(onClick = { statusInfoExpanded = !statusInfoExpanded }) {
+                        Text(
+                            stringResource(
+                                if (statusInfoExpanded) R.string.action_collapse else R.string.action_expand,
                             ),
                         )
                     }
                 },
-            )
-        }
-
-        if (groups.isEmpty()) {
-            item {
-                SectionCard {
-                    EmptyMessage(stringResource(R.string.moon_saved_empty))
-                }
-            }
-        } else {
-            groups.forEach { group ->
-                item(key = group.worldId) {
-                    MoonWorldCard(
-                        group = group,
-                        state = state,
-                        deorbitEnabled = moonAvailable,
-                        onDeorbit = onDeorbit,
+            ) {
+                if (statusInfoExpanded) {
+                    LegendItem(
+                        title = stringResource(R.string.moon_status_orbit),
+                        body = stringResource(R.string.moon_status_orbit_desc),
+                    )
+                    LegendItem(
+                        title = stringResource(R.string.moon_status_seed),
+                        body = stringResource(R.string.moon_status_seed_desc),
+                    )
+                    LegendItem(
+                        title = stringResource(R.string.moon_status_definition),
+                        body = stringResource(R.string.moon_status_definition_desc),
                     )
                 }
             }
         }
 
-        item {
-            Spacer(Modifier.height(8.dp))
-        }
+        item { Spacer(Modifier.height(8.dp)) }
     }
 }
 
@@ -225,10 +236,23 @@ private fun MoonWorldCard(
     state: TunnelUiState,
     deorbitEnabled: Boolean,
     onDeorbit: (String) -> Unit,
+    onRemoveLocally: (String) -> Unit,
 ) {
+    var detailsExpanded by rememberSaveable(group.worldId) { mutableStateOf(false) }
+    var confirmation by rememberSaveable(group.worldId) { mutableStateOf("") }
+    val lastOperation = state.moonOperation?.takeIf {
+        it.worldId == group.worldId && it.type != nova.lunavane.MoonOperationType.RESTORE
+    }
+    val requestTone = when {
+        lastOperation?.outcome == MoonOperationOutcome.ACCEPTED -> StatusTone.SUCCESS
+        lastOperation != null && moonOperationIsWarning(lastOperation) -> StatusTone.WARNING
+        else -> StatusTone.NEUTRAL
+    }
+
     SectionCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.Top,
         ) {
             Column(
@@ -247,34 +271,18 @@ private fun MoonWorldCard(
                     fontWeight = FontWeight.SemiBold,
                 )
             }
-            TextButton(
-                onClick = { onDeorbit(group.worldId) },
-                enabled = deorbitEnabled,
-            ) {
-                Text(
-                    text = stringResource(R.string.action_deorbit),
-                    color = if (deorbitEnabled) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-            }
+            StatusPill(
+                text = pluralStringResource(
+                    R.plurals.moon_seed_count,
+                    group.seeds.size,
+                    group.seeds.size,
+                ),
+                tone = StatusTone.NEUTRAL,
+            )
         }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-        group.seeds.forEachIndexed { index, seed ->
-            if (index > 0) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            }
-            MoonSeedEntry(seed = seed, state = state)
-        }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
         Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -284,9 +292,47 @@ private fun MoonWorldCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             StatusPill(
-                text = stringResource(R.string.moon_saved_request_value),
-                tone = StatusTone.SUCCESS,
+                text = lastOperation?.let { moonOperationLabel(it) }
+                    ?: stringResource(R.string.moon_saved_request_value),
+                tone = requestTone,
             )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(
+                onClick = { confirmation = "deorbit" },
+                enabled = deorbitEnabled,
+            ) {
+                Text(
+                    text = stringResource(R.string.moon_deorbit_core),
+                    color = if (deorbitEnabled) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(
+                onClick = { confirmation = "local" },
+            ) {
+                Text(
+                    text = stringResource(R.string.moon_remove_local),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            TextButton(onClick = { detailsExpanded = !detailsExpanded }) {
+                Text(
+                    stringResource(
+                        if (detailsExpanded) R.string.action_collapse else R.string.action_expand,
+                    ),
+                )
+            }
+        }
+        if (detailsExpanded) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            group.seeds.forEachIndexed { index, seed ->
+                if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                MoonSeedEntry(seed = seed, state = state)
+            }
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -303,13 +349,42 @@ private fun MoonWorldCard(
                 tone = StatusTone.WARNING,
             )
         }
-        if (!deorbitEnabled) {
-            Text(
-                text = stringResource(R.string.moon_deorbit_unavailable),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+    }
+
+    if (confirmation.isNotBlank()) {
+        val coreDeorbit = confirmation == "deorbit"
+        AlertDialog(
+            onDismissRequest = { confirmation = "" },
+            title = {
+                Text(
+                    stringResource(
+                        if (coreDeorbit) R.string.moon_deorbit_confirm_title
+                        else R.string.moon_remove_local_confirm_title,
+                    ),
+                )
+            },
+            text = {
+                Text(
+                    stringResource(
+                        if (coreDeorbit) R.string.moon_deorbit_confirm_body
+                        else R.string.moon_remove_local_confirm_body,
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmation = ""
+                    if (coreDeorbit) onDeorbit(group.worldId) else onRemoveLocally(group.worldId)
+                }) {
+                    Text(stringResource(R.string.action_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmation = "" }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }
 

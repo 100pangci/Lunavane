@@ -32,6 +32,7 @@ internal enum class VirtualNetworkState {
 internal enum class MoonOperationType {
     ORBIT,
     DEORBIT,
+    LOCAL_REMOVE,
     RESTORE,
 }
 
@@ -45,6 +46,10 @@ internal enum class MoonOperationOutcome {
     FILE_REMAINS,
     FILE_STATUS_UNKNOWN,
     RECORD_REMOVE_FAILED,
+    SAVED_PENDING,
+    SAVE_FAILED,
+    LOCAL_REMOVED,
+    LOCAL_REMOVE_FAILED,
 }
 
 /**
@@ -70,6 +75,13 @@ internal data class TunnelUiState(
     val nodeAddress: String = "",
     val networkId: String = "",
     val networkName: String = "",
+    val switchingNetwork: Boolean = false,
+    val switchingToNetworkId: String = "",
+    val coreStopComplete: Boolean = true,
+    val sessionStopGeneration: Long = 0L,
+    val sessionStopCompletedGeneration: Long = 0L,
+    val sessionStopCompletedRequestId: Long = 0L,
+    val connectRequestId: Long = 0L,
     val assignedAddresses: List<String> = emptyList(),
     val activeRoutes: List<String> = emptyList(),
     val dnsServers: List<String> = emptyList(),
@@ -95,12 +107,19 @@ internal object TunnelState {
 
     fun clearError() = mutableState.update { it.copy(lastError = null) }
 
-    fun reset() {
+    fun reset(preserveSwitchingNetwork: Boolean = false) {
         mutableState.update { current ->
             TunnelUiState(
                 moonSeeds = current.moonSeeds,
                 moonMessage = current.moonMessage,
                 moonOperation = current.moonOperation,
+                switchingNetwork = preserveSwitchingNetwork && current.switchingNetwork,
+                switchingToNetworkId = if (preserveSwitchingNetwork) current.switchingToNetworkId else "",
+                coreStopComplete = current.coreStopComplete,
+                sessionStopGeneration = current.sessionStopGeneration,
+                sessionStopCompletedGeneration = current.sessionStopCompletedGeneration,
+                sessionStopCompletedRequestId = current.sessionStopCompletedRequestId,
+                connectRequestId = current.connectRequestId,
                 lastError = current.lastError,
             )
         }

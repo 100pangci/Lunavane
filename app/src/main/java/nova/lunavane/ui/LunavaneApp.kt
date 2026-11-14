@@ -41,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import nova.lunavane.DiagnosticEntry
 import nova.lunavane.R
+import nova.lunavane.SavedNetwork
 import nova.lunavane.TunnelUiState
 import nova.lunavane.ui.components.BrandMark
 
@@ -56,6 +57,7 @@ internal fun LunavaneApp(
     state: TunnelUiState,
     diagnostics: List<DiagnosticEntry>,
     savedNetworkId: String,
+    savedNetworks: List<SavedNetwork>,
     actionPending: Boolean,
     connectPending: Boolean,
     permissionDenied: Boolean,
@@ -67,8 +69,14 @@ internal fun LunavaneApp(
     onDynamicColorChange: (Boolean) -> Unit,
     onConnect: (String) -> Unit,
     onDisconnect: () -> Unit,
+    onSelectNetwork: (String) -> Unit,
+    onAddNetwork: (String, String) -> Boolean,
+    onRenameNetwork: (String, String) -> Boolean,
+    onDeleteNetwork: (String) -> Unit,
+    onMoveNetwork: (String, Int) -> Unit,
     onOrbit: (String, String) -> Unit,
     onDeorbit: (String) -> Unit,
+    onRemoveMoonLocally: (String) -> Unit,
     onClearDiagnostics: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(AppTab.HOME) }
@@ -150,28 +158,35 @@ internal fun LunavaneApp(
                         AppTab.HOME -> HomeScreen(
                             state = state,
                             savedNetworkId = savedNetworkId,
+                            savedNetworks = savedNetworks,
                             actionPending = actionPending,
                             permissionDenied = permissionDenied,
-                            onConnect = {
-                                onConnect(savedNetworkId.ifBlank { state.networkId })
-                            },
+                            onConnect = onConnect,
                             onDisconnect = onDisconnect,
+                            onSelectNetwork = onSelectNetwork,
                             onOpenNetworks = { tab = AppTab.NETWORKS },
                             onOpenDiagnostics = { tab = AppTab.DIAGNOSTICS },
                         )
                         AppTab.NETWORKS -> NetworksScreen(
                             state = state,
                             savedNetworkId = savedNetworkId,
+                            savedNetworks = savedNetworks,
                             actionPending = actionPending,
                             connectPending = connectPending,
                             permissionDenied = permissionDenied,
                             onConnect = onConnect,
                             onDisconnect = onDisconnect,
+                            onSelectNetwork = onSelectNetwork,
+                            onAddNetwork = onAddNetwork,
+                            onRenameNetwork = onRenameNetwork,
+                            onDeleteNetwork = onDeleteNetwork,
+                            onMoveNetwork = onMoveNetwork,
                         )
                         AppTab.MOON -> MoonScreen(
                             state = state,
                             onOrbit = onOrbit,
                             onDeorbit = onDeorbit,
+                            onRemoveLocally = onRemoveMoonLocally,
                         )
                         AppTab.DIAGNOSTICS -> DiagnosticsScreen(
                             state = state,

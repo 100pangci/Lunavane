@@ -15,13 +15,19 @@
     <string name="action_orbit">Orbit</string>
     <string name="action_deorbit">Deorbit</string>
     <string name="action_clear_logs">Clear logs</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_save">Save</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_confirm">Confirm</string>
+    <string name="action_expand">Details</string>
+    <string name="action_collapse">Hide details</string>
     <string name="value_unavailable">—</string>
     <string name="value_unknown">Unknown</string>
     <string name="unit_milliseconds">%1$d ms</string>
 
     <!-- Home -->
     <string name="home_no_network">No network configured</string>
-    <string name="home_current_network">Current network · %1$s</string>
+    <string name="home_current_network">Selected network · %1$s</string>
     <string name="home_status_disconnected">Not connected</string>
     <string name="home_desc_disconnected">Tap the power button to connect to your ZeroTier network.</string>
     <string name="home_status_connecting">Connecting</string>
@@ -31,7 +37,7 @@
     <string name="home_status_connected">Connected</string>
     <string name="home_desc_connected">The ZeroTier network is connected.</string>
     <string name="home_status_switching">Switching networks</string>
-    <string name="home_desc_switching">Switching to a new underlying network.</string>
+    <string name="home_desc_switching">Stopping the previous session and joining the selected ZeroTier network.</string>
     <string name="home_status_recovering">Recovering</string>
     <string name="home_desc_recovering">Recovering the ZeroTier UDP transport.</string>
     <string name="home_status_recovery_failed">Recovery failed</string>
@@ -50,6 +56,9 @@
     <string name="home_metric_peers">Peers discovered</string>
     <string name="home_metric_underlay">Underlying network</string>
     <string name="home_metric_recovery">Transport recovery</string>
+    <string name="home_network_picker_title">Choose a network</string>
+    <string name="home_network_picker_empty">No saved networks yet.</string>
+    <string name="home_active_network_other">The active session is still on %1$s.</string>
 
     <!-- Node, network, transport states -->
     <string name="node_state_idle">Idle</string>
@@ -86,6 +95,22 @@
     <string name="networks_network_id_label">ZeroTier Network ID</string>
     <string name="networks_network_id_hint">16 hexadecimal characters</string>
     <string name="networks_network_id_example" translatable="false">8056c2e21c000001</string>
+    <string name="networks_add_title">Add a saved network</string>
+    <string name="networks_custom_name">Custom name (optional)</string>
+    <string name="networks_duplicate">This network is already saved.</string>
+    <string name="networks_save_failed">The network could not be saved.</string>
+    <string name="networks_saved_title">Saved networks</string>
+    <string name="networks_saved_empty">Add a ZeroTier Network ID to get started.</string>
+    <string name="networks_more_options">Network options</string>
+    <string name="networks_edit_name">Edit name</string>
+    <string name="networks_move_up">Move up</string>
+    <string name="networks_move_down">Move down</string>
+    <string name="networks_delete_title">Delete saved network?</string>
+    <string name="networks_delete_body">This removes the saved network entry. The ZeroTier node identity and Moon settings are kept.</string>
+    <string name="networks_delete_connected">The active network session will be stopped and fully cleaned up before its saved entry is removed. Node identity and Moon settings are kept.</string>
+    <string name="networks_selected">Selected</string>
+    <string name="networks_select_network">Select</string>
+    <string name="networks_switch_and_connect">Switch and connect</string>
     <string name="networks_network_id_locked">Disconnect before changing the network ID.</string>
     <string name="networks_connecting">Connecting…</string>
     <string name="networks_details_title">Network details</string>
@@ -124,6 +149,19 @@
     <!-- Moon screen -->
     <string name="moon_orbit_title">Orbit a Moon</string>
     <string name="moon_intro">Orbit a Moon with its world ID and one of its seed node addresses.</string>
+    <string name="moon_save_and_orbit">Save and Orbit</string>
+    <string name="moon_save_for_later">Save for later</string>
+    <string name="moon_offline_save_hint">Saved locally now; the request will be submitted when the ZeroTier node starts.</string>
+    <string name="moon_deorbit_core">Deorbit in Core</string>
+    <string name="moon_remove_local">Remove saved settings</string>
+    <string name="moon_deorbit_confirm_title">Deorbit Moon in Core?</string>
+    <string name="moon_deorbit_confirm_body">The app will ask Core to remove this Moon and will remove local settings only after confirming the Core file is gone.</string>
+    <string name="moon_remove_local_confirm_title">Remove local Moon settings?</string>
+    <string name="moon_remove_local_confirm_body">This removes saved Orbit requests from this device. A running Core is not changed.</string>
+    <string name="moon_orbit_saved_pending">Saved locally; waiting for the ZeroTier node to submit the Orbit request.</string>
+    <string name="moon_save_failed">The Moon configuration could not be saved locally. No Orbit request was submitted.</string>
+    <string name="moon_local_remove_accepted">Saved Moon settings were removed locally. The Core was not changed.</string>
+    <string name="moon_local_remove_failed">The saved Moon settings could not be removed.</string>
     <string name="moon_world_id_label">Moon world ID</string>
     <string name="moon_world_id_hint">16 hexadecimal characters</string>
     <string name="moon_seed_label">Seed node address</string>
@@ -236,6 +274,7 @@
     <!-- Notification -->
     <string name="notification_channel_name">ZeroTier tunnel</string>
     <string name="notification_starting">Starting ZeroTier node</string>
+    <string name="notification_switching">Switching ZeroTier network</string>
     <string name="notification_requesting_config">Requesting network configuration</string>
     <string name="notification_connected">Connected</string>
     <string name="notification_disconnected">Disconnected</string>
@@ -267,6 +306,10 @@
     <plurals name="log_entry_count">
         <item quantity="one">%1$d entry</item>
         <item quantity="other">%1$d entries</item>
+    </plurals>
+    <plurals name="moon_seed_count">
+        <item quantity="one">%1$d seed</item>
+        <item quantity="other">%1$d seeds</item>
     </plurals>
     <plurals name="moon_saved_requests">
         <item quantity="one">%1$d saved request</item>

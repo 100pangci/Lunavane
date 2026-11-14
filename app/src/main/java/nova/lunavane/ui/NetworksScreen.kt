@@ -19,14 +19,19 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -51,8 +56,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import nova.lunavane.R
+import nova.lunavane.SavedNetwork
 import nova.lunavane.TunnelUiState
 import nova.lunavane.VirtualNetworkState
+import nova.lunavane.fatalVirtualNetworkStates
 import nova.lunavane.vpn.PeerInfo
 import nova.lunavane.vpn.PeerRole
 import nova.lunavane.ui.components.DataRow
@@ -68,27 +75,24 @@ import nova.lunavane.ui.components.StatusTone
 internal fun NetworksScreen(
     state: TunnelUiState,
     savedNetworkId: String,
+    savedNetworks: List<SavedNetwork>,
     actionPending: Boolean,
     connectPending: Boolean,
     permissionDenied: Boolean,
     onConnect: (String) -> Unit,
     onDisconnect: () -> Unit,
+    onSelectNetwork: (String) -> Unit,
+    onAddNetwork: (String, String) -> Boolean,
+    onRenameNetwork: (String, String) -> Boolean,
+    onDeleteNetwork: (String) -> Unit,
+    onMoveNetwork: (String, Int) -> Unit,
 ) {
-    var editedNetworkId by rememberSaveable { mutableStateOf(savedNetworkId) }
-    var syncedNetworkId by rememberSaveable { mutableStateOf(savedNetworkId) }
     var selectedPeerAddress by rememberSaveable { mutableStateOf<String?>(null) }
     val selectedPeer = selectedPeerAddress?.let { address ->
         state.peers.firstOrNull { it.address == address }
     }
     val listState = rememberLazyListState()
 
-    LaunchedEffect(savedNetworkId) {
-        if (savedNetworkId == syncedNetworkId) return@LaunchedEffect
-        if (editedNetworkId == syncedNetworkId || editedNetworkId.isBlank()) {
-            editedNetworkId = savedNetworkId
-        }
-        syncedNetworkId = savedNetworkId
-    }
     LaunchedEffect(selectedPeerAddress, state.peers) {
         if (selectedPeerAddress != null && selectedPeer == null) selectedPeerAddress = null
     }
@@ -101,16 +105,45 @@ internal fun NetworksScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         item {
-            ConnectionCard(
-                editedNetworkId = editedNetworkId,
-                onNetworkIdChange = { editedNetworkId = sanitizeHexInput(it, 16) },
-                state = state,
+            AddNetworkCard(
+                existingIds = savedNetworks.map(SavedNetwork::networkId).toSet(),
                 actionPending = actionPending,
-                connectPending = connectPending,
-                permissionDenied = permissionDenied,
-                onConnect = onConnect,
-                onDisconnect = onDisconnect,
+                onAddNetwork = onAddNetwork,
             )
+        }
+        item {
+            SectionHeader(
+                title = stringResource(R.string.networks_saved_title),
+                trailing = if (savedNetworks.isNotEmpty()) {
+                    { StatusPill(text = savedNetworks.size.toString()) }
+                } else {
+                    null
+                },
+            )
+        }
+        if (savedNetworks.isEmpty()) {
+            item {
+                SectionCard { EmptyMessage(stringResource(R.string.networks_saved_empty)) }
+            }
+        } else {
+            items(savedNetworks, key = SavedNetwork::networkId) { profile ->
+                SavedNetworkCard(
+                    profile = profile,
+                    selected = profile.networkId == savedNetworkId,
+                    state = state,
+                    actionPending = actionPending,
+                    connectPending = connectPending && profile.networkId == savedNetworkId,
+                    permissionDenied = permissionDenied,
+                    canMoveUp = savedNetworks.firstOrNull()?.networkId != profile.networkId,
+                    canMoveDown = savedNetworks.lastOrNull()?.networkId != profile.networkId,
+                    onSelect = { onSelectNetwork(profile.networkId) },
+                    onConnect = { onConnect(profile.networkId) },
+                    onDisconnect = onDisconnect,
+                    onRename = { name -> onRenameNetwork(profile.networkId, name) },
+                    onDelete = { onDeleteNetwork(profile.networkId) },
+                    onMove = { offset -> onMoveNetwork(profile.networkId, offset) },
+                )
+            }
         }
         item {
             NetworkDetailsCard(state = state, savedNetworkId = savedNetworkId)
@@ -159,22 +192,23 @@ internal fun NetworksScreen(
 }
 
 @Composable
-private fun ConnectionCard(
-    editedNetworkId: String,
-    onNetworkIdChange: (String) -> Unit,
-    state: TunnelUiState,
+private fun AddNetworkCard(
+    existingIds: Set<String>,
     actionPending: Boolean,
-    connectPending: Boolean,
-    permissionDenied: Boolean,
-    onConnect: (String) -> Unit,
-    onDisconnect: () -> Unit,
+    onAddNetwork: (String, String) -> Boolean,
 ) {
-    val valid = isValidNetworkId(editedNetworkId)
-    val locked = state.tunnelActive
-    SectionCard(title = stringResource(R.string.networks_connect_title)) {
+    var networkId by rememberSaveable { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf("") }
+    var error by rememberSaveable { mutableStateOf("") }
+    val normalized = networkId.lowercase()
+    val valid = isValidNetworkId(normalized)
+    val duplicate = normalized in existingIds
+    val saveFailedMessage = stringResource(R.string.networks_save_failed)
+
+    SectionCard(title = stringResource(R.string.networks_add_title)) {
         OutlinedTextField(
-            value = editedNetworkId,
-            onValueChange = onNetworkIdChange,
+            value = networkId,
+            onValueChange = { networkId = sanitizeHexInput(it, 16); error = "" },
             modifier = Modifier.fillMaxWidth(),
             label = { Text(stringResource(R.string.networks_network_id_label)) },
             placeholder = {
@@ -183,52 +217,210 @@ private fun ConnectionCard(
                     fontFamily = FontFamily.Monospace,
                 )
             },
-            supportingText = {
-                Text(
-                    text = if (locked) {
-                        stringResource(R.string.networks_network_id_locked)
-                    } else {
-                        stringResource(R.string.networks_network_id_hint)
-                    },
-                )
-            },
-            enabled = !locked && !actionPending,
+            supportingText = { Text(stringResource(R.string.networks_network_id_hint)) },
+            enabled = !actionPending,
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
             textStyle = TextStyle(fontFamily = FontFamily.Monospace),
         )
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it; error = "" },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text(stringResource(R.string.networks_custom_name)) },
+            enabled = !actionPending,
+            singleLine = true,
+        )
+        if (duplicate) InlineHint(text = stringResource(R.string.networks_duplicate))
+        if (error.isNotBlank()) InlineHint(text = error)
+        Button(
+            onClick = {
+                if (onAddNetwork(normalized, name)) {
+                    networkId = ""
+                    name = ""
+                    error = ""
+                } else {
+                    error = saveFailedMessage
+                }
+            },
+            enabled = valid && !duplicate && !actionPending,
+        ) {
+            Text(stringResource(R.string.action_add_network))
+        }
+    }
+}
+
+@Composable
+private fun SavedNetworkCard(
+    profile: SavedNetwork,
+    selected: Boolean,
+    state: TunnelUiState,
+    actionPending: Boolean,
+    connectPending: Boolean,
+    permissionDenied: Boolean,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onSelect: () -> Unit,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onRename: (String) -> Boolean,
+    onDelete: () -> Unit,
+    onMove: (Int) -> Unit,
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    var editDialogOpen by rememberSaveable(profile.networkId) { mutableStateOf(false) }
+    var deleteDialogOpen by rememberSaveable(profile.networkId) { mutableStateOf(false) }
+    var editName by rememberSaveable(profile.networkId) { mutableStateOf(profile.name) }
+    val active = state.tunnelActive && state.networkId == profile.networkId
+    val status = if (active) deriveConnectionStatus(state) else null
+    val healthy = active && status == ConnectionStatus.CONNECTED
+
+    SectionCard(
+        title = profile.name.ifBlank { profile.networkId },
+        action = {
+            IconButton(onClick = { menuExpanded = true }, enabled = !actionPending) {
+                Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = stringResource(R.string.networks_more_options),
+                )
+            }
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.networks_edit_name)) },
+                    onClick = { menuExpanded = false; editName = profile.name; editDialogOpen = true },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.networks_move_up)) },
+                    enabled = canMoveUp,
+                    onClick = { menuExpanded = false; onMove(-1) },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.networks_move_down)) },
+                    enabled = canMoveDown,
+                    onClick = { menuExpanded = false; onMove(1) },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.action_delete)) },
+                    enabled = !actionPending,
+                    onClick = { menuExpanded = false; deleteDialogOpen = true },
+                )
+            }
+        },
+    ) {
+        DataRow(
+            label = stringResource(R.string.networks_network_id),
+            value = profile.networkId,
+            monospace = true,
+        )
         Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Button(
-                onClick = { onConnect(editedNetworkId) },
-                enabled = valid && !locked && !actionPending,
-            ) {
-                if (connectPending) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(stringResource(R.string.networks_connecting))
-                } else {
-                    Text(stringResource(R.string.action_connect))
+            if (selected) StatusPill(text = stringResource(R.string.networks_selected), tone = StatusTone.PRIMARY)
+            if (active && state.networkState != VirtualNetworkState.IDLE) {
+                StatusPill(
+                    text = connectionStatusLabel(status ?: ConnectionStatus.DISCONNECTED),
+                    tone = when {
+                        status?.isFailure == true -> StatusTone.ERROR
+                        healthy -> StatusTone.SUCCESS
+                        else -> StatusTone.NEUTRAL
+                    },
+                )
+            }
+            if (active && state.networkState in fatalVirtualNetworkStates) {
+                StatusPill(
+                    text = networkStateLabel(state.networkState),
+                    tone = StatusTone.ERROR,
+                )
+            }
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (!selected && (!state.tunnelActive || active)) {
+                TextButton(onClick = onSelect, enabled = !actionPending) {
+                    Text(stringResource(R.string.networks_select_network))
                 }
             }
-            if (locked) {
+            if (active && status?.isFailure != true) {
                 TextButton(onClick = onDisconnect, enabled = !actionPending) {
-                    Text(
-                        text = stringResource(R.string.action_disconnect),
-                        color = MaterialTheme.colorScheme.error,
-                    )
+                    Text(stringResource(R.string.action_disconnect))
+                }
+            } else {
+                Button(onClick = onConnect, enabled = !actionPending) {
+                    if (connectPending) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(stringResource(R.string.networks_connecting))
+                    } else {
+                        Text(
+                            stringResource(
+                                if (state.tunnelActive && !active) {
+                                    R.string.networks_switch_and_connect
+                                } else {
+                                    R.string.action_connect
+                                },
+                            ),
+                        )
+                    }
                 }
             }
         }
-        if (permissionDenied) {
-            InlineHint(text = stringResource(R.string.home_permission_denied))
-        }
+        if (permissionDenied) InlineHint(text = stringResource(R.string.home_permission_denied))
+    }
+
+    if (editDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { editDialogOpen = false },
+            title = { Text(stringResource(R.string.networks_edit_name)) },
+            text = {
+                OutlinedTextField(
+                    value = editName,
+                    onValueChange = { editName = it },
+                    label = { Text(stringResource(R.string.networks_custom_name)) },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (onRename(editName)) editDialogOpen = false
+                }) { Text(stringResource(R.string.action_save)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { editDialogOpen = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+    if (deleteDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { deleteDialogOpen = false },
+            title = { Text(stringResource(R.string.networks_delete_title)) },
+            text = {
+                Text(
+                    stringResource(
+                        if (active) R.string.networks_delete_connected else R.string.networks_delete_body,
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { deleteDialogOpen = false; onDelete() }) {
+                    Text(stringResource(R.string.action_delete), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteDialogOpen = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }
 

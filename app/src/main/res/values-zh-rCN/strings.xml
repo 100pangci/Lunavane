@@ -15,13 +15,19 @@
     <string name="action_orbit">Orbit</string>
     <string name="action_deorbit">Deorbit</string>
     <string name="action_clear_logs">清空日志</string>
+    <string name="action_delete">删除</string>
+    <string name="action_save">保存</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_confirm">确认</string>
+    <string name="action_expand">展开详情</string>
+    <string name="action_collapse">收起详情</string>
     <string name="value_unavailable">—</string>
     <string name="value_unknown">未知</string>
     <string name="unit_milliseconds">%1$d ms</string>
 
     <!-- 首页 -->
     <string name="home_no_network">尚未配置网络</string>
-    <string name="home_current_network">当前网络 · %1$s</string>
+    <string name="home_current_network">已选择网络 · %1$s</string>
     <string name="home_status_disconnected">未连接</string>
     <string name="home_desc_disconnected">点击电源按钮连接 ZeroTier 网络。</string>
     <string name="home_status_connecting">正在连接</string>
@@ -31,7 +37,7 @@
     <string name="home_status_connected">已连接</string>
     <string name="home_desc_connected">ZeroTier 网络已连接。</string>
     <string name="home_status_switching">网络正在切换</string>
-    <string name="home_desc_switching">正在切换到新的底层网络。</string>
+    <string name="home_desc_switching">正在停止旧会话并加入所选 ZeroTier 网络。</string>
     <string name="home_status_recovering">正在恢复</string>
     <string name="home_desc_recovering">正在恢复 ZeroTier UDP 传输。</string>
     <string name="home_status_recovery_failed">恢复失败</string>
@@ -50,6 +56,9 @@
     <string name="home_metric_peers">已发现 Peer</string>
     <string name="home_metric_underlay">底层网络</string>
     <string name="home_metric_recovery">传输恢复</string>
+    <string name="home_network_picker_title">选择网络</string>
+    <string name="home_network_picker_empty">尚未保存网络。</string>
+    <string name="home_active_network_other">当前活动会话仍连接到 %1$s。</string>
 
     <!-- 节点、网络与传输状态 -->
     <string name="node_state_idle">空闲</string>
@@ -85,6 +94,22 @@
     <string name="networks_connect_title">连接网络</string>
     <string name="networks_network_id_label">ZeroTier 网络 ID</string>
     <string name="networks_network_id_hint">16 位十六进制字符</string>
+    <string name="networks_add_title">添加并保存网络</string>
+    <string name="networks_custom_name">自定义名称（可选）</string>
+    <string name="networks_duplicate">该网络已保存。</string>
+    <string name="networks_save_failed">无法保存该网络。</string>
+    <string name="networks_saved_title">已保存的网络</string>
+    <string name="networks_saved_empty">添加 ZeroTier 网络 ID 以开始使用。</string>
+    <string name="networks_more_options">网络选项</string>
+    <string name="networks_edit_name">编辑名称</string>
+    <string name="networks_move_up">上移</string>
+    <string name="networks_move_down">下移</string>
+    <string name="networks_delete_title">删除已保存的网络？</string>
+    <string name="networks_delete_body">这会移除已保存的网络记录。ZeroTier 节点身份和 Moon 设置会保留。</string>
+    <string name="networks_delete_connected">移除记录前会先停止并完整清理当前网络会话。节点身份和 Moon 设置会保留。</string>
+    <string name="networks_selected">已选择</string>
+    <string name="networks_select_network">选择</string>
+    <string name="networks_switch_and_connect">切换并连接</string>
     <string name="networks_network_id_locked">断开连接后才能更改网络 ID。</string>
     <string name="networks_connecting">正在连接…</string>
     <string name="networks_details_title">网络详情</string>
@@ -123,6 +148,19 @@
     <!-- Moon 页面 -->
     <string name="moon_orbit_title">Orbit Moon</string>
     <string name="moon_intro">使用 Moon world ID 与其一个 Seed 节点地址进行 Orbit。</string>
+    <string name="moon_save_and_orbit">保存并 Orbit</string>
+    <string name="moon_save_for_later">稍后提交</string>
+    <string name="moon_offline_save_hint">配置会先保存在本机，ZeroTier 节点启动后再提交 Orbit 请求。</string>
+    <string name="moon_deorbit_core">向 Core Deorbit</string>
+    <string name="moon_remove_local">仅删除本地设置</string>
+    <string name="moon_deorbit_confirm_title">向 Core Deorbit 此 Moon？</string>
+    <string name="moon_deorbit_confirm_body">应用会请求 Core 移除此 Moon，并仅在确认 Core 文件已删除后移除本地设置。</string>
+    <string name="moon_remove_local_confirm_title">删除本地 Moon 设置？</string>
+    <string name="moon_remove_local_confirm_body">这会从本机删除已保存的 Orbit 请求，不会更改正在运行的 Core。</string>
+    <string name="moon_orbit_saved_pending">已保存在本机，等待 ZeroTier 节点启动后提交 Orbit 请求。</string>
+    <string name="moon_save_failed">无法在本机保存 Moon 配置，尚未提交 Orbit 请求。</string>
+    <string name="moon_local_remove_accepted">已从本机删除 Moon 设置，Core 未更改。</string>
+    <string name="moon_local_remove_failed">无法删除本地 Moon 设置。</string>
     <string name="moon_world_id_label">Moon world ID</string>
     <string name="moon_world_id_hint">16 位十六进制字符</string>
     <string name="moon_seed_label">Seed 节点地址</string>
@@ -233,6 +271,7 @@
     <!-- 通知 -->
     <string name="notification_channel_name">ZeroTier 隧道</string>
     <string name="notification_starting">正在启动 ZeroTier 节点</string>
+    <string name="notification_switching">正在切换 ZeroTier 网络</string>
     <string name="notification_requesting_config">正在请求网络配置</string>
     <string name="notification_connected">已连接</string>
     <string name="notification_disconnected">已断开</string>
@@ -261,6 +300,9 @@
     </plurals>
     <plurals name="log_entry_count">
         <item quantity="other">%1$d 条</item>
+    </plurals>
+    <plurals name="moon_seed_count">
+        <item quantity="other">%1$d 个 Seed</item>
     </plurals>
     <plurals name="moon_saved_requests">
         <item quantity="other">%1$d 条已保存请求</item>

@@ -18,6 +18,8 @@ import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
 import nova.lunavane.DiagnosticLog
 import nova.lunavane.MainActivity
+import nova.lunavane.normalizeNetworkId
+import nova.lunavane.needsConnectionRetry
 import nova.lunavane.MoonOperation
 import nova.lunavane.MoonOperationOutcome
 import nova.lunavane.MoonOperationType
@@ -63,6 +65,8 @@ class ZeroTierVpnService : VpnService() {
         const val ACTION_ORBIT = "nova.lunavane.ORBIT"
         const val ACTION_DEORBIT = "nova.lunavane.DEORBIT"
         const val EXTRA_NETWORK_ID = "network_id"
+        const val EXTRA_CONNECT_REQUEST_ID = "connect_request_id"
+        const val EXTRA_STOP_REQUEST_ID = "stop_request_id"
         const val EXTRA_MOON_WORLD_ID = "moon_world_id"
         const val EXTRA_MOON_SEED = "moon_seed"
         private const val CHANNEL_ID = "zerotier_tunnel"
@@ -193,7 +197,9 @@ class ZeroTierVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_DISCONNECT -> stopTunnel()
+            ACTION_DISCONNECT -> stopTunnel(
+                stopRequestId = intent.getLongExtra(EXTRA_STOP_REQUEST_ID, 0L),
+            )
             ACTION_ORBIT -> requestOrbit(
                 intent.getStringExtra(EXTRA_MOON_WORLD_ID).orEmpty(),
                 intent.getStringExtra(EXTRA_MOON_SEED).orEmpty(),
@@ -202,18 +208,67 @@ class ZeroTierVpnService : VpnService() {
             ACTION_DEORBIT -> requestDeorbit(intent.getStringExtra(EXTRA_MOON_WORLD_ID).orEmpty(), startId)
             ACTION_CONNECT -> {
                 val requested = intent.getStringExtra(EXTRA_NETWORK_ID).orEmpty()
-                if (requested.length != 16 || requested.any { it.digitToIntOrNull(16) == null }) {
-                    stopSelf(startId)
+                val requestId = intent.getLongExtra(EXTRA_CONNECT_REQUEST_ID, 0L)
+                val normalized = normalizeNetworkId(requested)
+                if (normalized == null) {
+                    publish("Failed", "Invalid ZeroTier network ID")
+                    if (!TunnelState.state.value.tunnelActive) stopSelf(startId)
                     return START_NOT_STICKY
                 }
-                startForeground(NOTIFICATION_ID, notification(getString(R.string.notification_starting)))
-                stopTunnel(keepForeground = true)
-                networkIdText = requested.lowercase()
+                val previous = TunnelState.state.value
+                if (previous.switchingNetwork && previous.switchingToNetworkId == normalized &&
+                    !previous.needsConnectionRetry()
+                ) {
+                    TunnelState.update {
+                        it.copy(connectRequestId = requestId.takeIf { id -> id > 0L } ?: it.connectRequestId)
+                    }
+                    return START_NOT_STICKY
+                }
+                if (previous.tunnelActive && previous.networkId == normalized && !previous.switchingNetwork &&
+                    !previous.needsConnectionRetry()
+                ) {
+                    TunnelState.update {
+                        it.copy(connectRequestId = requestId.takeIf { id -> id > 0L } ?: it.connectRequestId)
+                    }
+                    return START_NOT_STICKY
+                }
+                val switching = previous.tunnelActive && previous.networkId != normalized
+                if (switching) {
+                    TunnelState.update {
+                        it.copy(
+                            status = "Switching network",
+                            detail = "Stopping the previous ZeroTier session",
+                            switchingNetwork = true,
+                            switchingToNetworkId = normalized,
+                        )
+                    }
+                }
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification(
+                        getString(
+                            if (switching) R.string.notification_switching else R.string.notification_starting,
+                        ),
+                    ),
+                )
+                stopTunnel(keepForeground = true, preserveSwitchingNetwork = switching)
+                runCatching { setUnderlyingNetworks(emptyArray()) }
+                    .onFailure { DiagnosticLog.append("Could not clear VPN underlying network: ${it.message}") }
+                networkIdText = normalized
                 networkId = networkIdText.toULong(16).toLong()
                 synchronized(lifecycleLock) { stopping.set(false) }
-                publish("Starting", "Initializing ZeroTier node") {
+                publish(
+                    if (switching) "Switching network" else "Starting",
+                    if (switching) "Joining the selected ZeroTier network" else "Initializing ZeroTier node",
+                ) {
                     it.copy(
                         tunnelActive = true,
+                        networkId = normalized,
+                        networkName = "",
+                        switchingNetwork = switching,
+                        switchingToNetworkId = if (switching) normalized else "",
+                        connectRequestId = requestId.takeIf { id -> id > 0L } ?: it.connectRequestId,
+                        nodeReady = false,
                         nodeState = NodeState.STARTING,
                         networkState = VirtualNetworkState.IDLE,
                         lastError = null,
@@ -225,7 +280,9 @@ class ZeroTierVpnService : VpnService() {
                 try {
                     startTunnel()
                 } catch (exception: Exception) {
-                    publish("Failed", exception.message ?: "Unable to start the tunnel")
+                    publish("Failed", exception.message ?: "Unable to start the tunnel") {
+                        it.copy(switchingNetwork = false, switchingToNetworkId = "")
+                    }
                     stopTunnel()
                 }
             }
@@ -268,6 +325,8 @@ class ZeroTierVpnService : VpnService() {
                 TunnelState.update { current ->
                     if (isCurrentCore(session, handle)) current.copy(
                         networkState = if (joinResult == 0) VirtualNetworkState.JOINING else VirtualNetworkState.JOIN_FAILED,
+                        switchingNetwork = joinResult == 0 && current.switchingNetwork,
+                        switchingToNetworkId = if (joinResult == 0) current.switchingToNetworkId else "",
                     ) else current
                 }
                 publishForCoreIf(
@@ -963,7 +1022,15 @@ class ZeroTierVpnService : VpnService() {
                         TunnelState.update { current ->
                             if (isCurrentCore(session, handle) && sequence > current.recoveryPhaseSequence) {
                                 phaseApplied = true
-                                current.copy(recoveryPhase = phase, recoveryPhaseSequence = sequence)
+                                val updated = current.copy(recoveryPhase = phase, recoveryPhaseSequence = sequence)
+                                if (phase == NetworkRecoveryPhase.READY && updated.switchingNetwork &&
+                                    updated.networkState == VirtualNetworkState.AUTHORIZED &&
+                                    updated.networkId == updated.switchingToNetworkId
+                                ) {
+                                    updated.copy(switchingNetwork = false, switchingToNetworkId = "")
+                                } else {
+                                    updated
+                                }
                             } else {
                                 phaseApplied = false
                                 current
@@ -1479,6 +1546,12 @@ class ZeroTierVpnService : VpnService() {
                         networkId = networkIdText,
                         networkName = updated.name,
                         networkState = VirtualNetworkState.AUTHORIZED,
+                        switchingNetwork = it.switchingNetwork &&
+                            !(it.switchingToNetworkId == networkIdText &&
+                                it.recoveryPhase in setOf(NetworkRecoveryPhase.READY, NetworkRecoveryPhase.STOPPED)),
+                        switchingToNetworkId = if (it.switchingToNetworkId == networkIdText &&
+                            it.recoveryPhase in setOf(NetworkRecoveryPhase.READY, NetworkRecoveryPhase.STOPPED)
+                        ) "" else it.switchingToNetworkId,
                         assignedAddresses = updated.addresses.map { address -> "${address.address}/${address.prefix}" },
                         activeRoutes = activeRoutes.map { route ->
                             "${route.address}/${route.prefix} via ${route.gateway ?: "direct"}"
@@ -1495,6 +1568,8 @@ class ZeroTierVpnService : VpnService() {
                         networkId = networkIdText,
                         networkName = updated.name,
                         networkState = networkStateFor(updated.status),
+                        switchingNetwork = false,
+                        switchingToNetworkId = "",
                         assignedAddresses = emptyList(),
                         activeRoutes = emptyList(),
                         dnsServers = emptyList(),
@@ -1513,6 +1588,8 @@ class ZeroTierVpnService : VpnService() {
                     dnsServers = emptyList(),
                     dnsDomain = "",
                     networkState = VirtualNetworkState.CONFIG_ERROR,
+                    switchingNetwork = false,
+                    switchingToNetworkId = "",
                 )
             }
             22
@@ -2573,6 +2650,7 @@ class ZeroTierVpnService : VpnService() {
     private fun notificationStatusText(status: String): String = getString(
         when (status) {
             "Starting" -> R.string.notification_starting
+            "Switching network" -> R.string.notification_switching
             "Requesting configuration" -> R.string.notification_requesting_config
             "Connected" -> R.string.notification_connected
             "Disconnected" -> R.string.notification_disconnected
@@ -2621,12 +2699,18 @@ class ZeroTierVpnService : VpnService() {
     }
 
     @Synchronized
-    private fun stopTunnel(keepForeground: Boolean = false, expectedSession: Long? = null) {
+    private fun stopTunnel(
+        keepForeground: Boolean = false,
+        expectedSession: Long? = null,
+        preserveSwitchingNetwork: Boolean = false,
+        stopRequestId: Long = 0L,
+    ) {
         cancelPendingNetworkSwitchReconnect()
         networkSwitchDebouncePending.set(false)
+        var stoppedGeneration = 0L
         val handleToStop = synchronized(lifecycleLock) {
             if (expectedSession != null && sessionGeneration.get() != expectedSession) return
-            sessionGeneration.incrementAndGet()
+            stoppedGeneration = sessionGeneration.incrementAndGet()
             selectedNetwork = null
             lastBoundNetwork = null
             activeUnderlayWasLost = false
@@ -2638,7 +2722,21 @@ class ZeroTierVpnService : VpnService() {
             lastObservedCandidateKey = null
         }
         if (handleToStop == null) {
-            if (!keepForeground) stopSelf()
+            synchronized(lifecycleLock) {
+                TunnelState.reset(preserveSwitchingNetwork)
+                TunnelState.update {
+                    it.copy(
+                        sessionStopGeneration = stoppedGeneration,
+                        coreStopComplete = false,
+                    )
+                }
+            }
+            val queued = executeCoreTask { completeStop(stoppedGeneration, stopRequestId) }
+            if (!queued) completeStop(stoppedGeneration, stopRequestId)
+            if (!keepForeground) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
             return
         }
         clearUnderlyingNetworksAfterStop()
@@ -2682,18 +2780,47 @@ class ZeroTierVpnService : VpnService() {
         packetDiagnosticKeys.clear()
         lastWireFailureCategory = null
         val networkToLeave = networkIdText
-        executeCoreTask {
-            if (handleToStop != 0L) {
-                if (networkToLeave.length == 16) NativeCore.leave(handleToStop, networkToLeave)
-                NativeCore.destroy(handleToStop)
-                coreHandle.clearIf(handleToStop)
+        synchronized(lifecycleLock) {
+            TunnelState.reset(preserveSwitchingNetwork)
+            TunnelState.update {
+                it.copy(
+                    sessionStopGeneration = stoppedGeneration,
+                    coreStopComplete = false,
+                )
             }
         }
-        synchronized(lifecycleLock) { TunnelState.reset() }
+        val queued = executeCoreTask {
+            try {
+                if (networkToLeave.length == 16) runCatching { NativeCore.leave(handleToStop, networkToLeave) }
+                runCatching { NativeCore.destroy(handleToStop) }
+            } finally {
+                coreHandle.clearIf(handleToStop)
+                completeStop(stoppedGeneration, stopRequestId)
+            }
+        }
+        if (!queued) {
+            runCatching { NativeCore.destroy(handleToStop) }
+            coreHandle.clearIf(handleToStop)
+            completeStop(stoppedGeneration, stopRequestId)
+        }
         DiagnosticLog.append("Tunnel stopped")
         if (!keepForeground) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
+        }
+    }
+
+    private fun completeStop(stoppedGeneration: Long, stopRequestId: Long) {
+        TunnelState.update { current ->
+            val completed = maxOf(current.sessionStopCompletedGeneration, stoppedGeneration)
+            current.copy(
+                sessionStopCompletedGeneration = completed,
+                sessionStopCompletedRequestId = maxOf(
+                    current.sessionStopCompletedRequestId,
+                    stopRequestId,
+                ),
+                coreStopComplete = completed >= current.sessionStopGeneration,
+            )
         }
     }
 

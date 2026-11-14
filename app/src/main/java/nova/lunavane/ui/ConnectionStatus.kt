@@ -1,8 +1,8 @@
 package nova.lunavane.ui
 
-import nova.lunavane.NodeState
 import nova.lunavane.TunnelUiState
 import nova.lunavane.VirtualNetworkState
+import nova.lunavane.hasConnectionError
 import nova.lunavane.vpn.NetworkRecoveryPhase
 
 internal enum class ConnectionStatus {
@@ -16,35 +16,18 @@ internal enum class ConnectionStatus {
     ERROR,
 }
 
-private val failureStatuses = setOf("Failed", "Tunnel error", "Configuration error")
-
-private val fatalNetworkStates = setOf(
-    VirtualNetworkState.ACCESS_DENIED,
-    VirtualNetworkState.NOT_FOUND,
-    VirtualNetworkState.PORT_ERROR,
-    VirtualNetworkState.CLIENT_TOO_OLD,
-    VirtualNetworkState.AUTH_REQUIRED,
-    VirtualNetworkState.JOIN_FAILED,
-    VirtualNetworkState.CONFIG_ERROR,
-)
-
 /**
  * Derives the user-visible connection state from the service state. Only an authorized
  * virtual network with a ready transport counts as connected; a running tunnel alone
  * is not enough.
  */
 internal fun deriveConnectionStatus(state: TunnelUiState): ConnectionStatus {
-    if (!state.tunnelActive) {
-        return if (state.lastError != null || state.status in failureStatuses) {
-            ConnectionStatus.ERROR
-        } else {
-            ConnectionStatus.DISCONNECTED
-        }
+    if (state.hasConnectionError()) return ConnectionStatus.ERROR
+    if (state.tunnelActive && state.recoveryPhase == NetworkRecoveryPhase.EXHAUSTED) {
+        return ConnectionStatus.RECOVERY_FAILED
     }
-    if (state.nodeState == NodeState.FAILED) return ConnectionStatus.ERROR
-    if (state.networkState in fatalNetworkStates) return ConnectionStatus.ERROR
-    if (state.status in failureStatuses) return ConnectionStatus.ERROR
-    if (state.recoveryPhase == NetworkRecoveryPhase.EXHAUSTED) return ConnectionStatus.RECOVERY_FAILED
+    if (state.switchingNetwork) return ConnectionStatus.SWITCHING_NETWORK
+    if (!state.tunnelActive) return ConnectionStatus.DISCONNECTED
     if (state.networkState == VirtualNetworkState.PENDING) {
         return ConnectionStatus.WAITING_FOR_AUTHORIZATION
     }

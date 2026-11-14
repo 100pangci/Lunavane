@@ -1,5 +1,7 @@
 package nova.lunavane.ui
 
+import nova.lunavane.isValidNetworkId as isValidNetworkProfileId
+
 private fun isHex(value: String): Boolean = value.all { it.digitToIntOrNull(16) != null }
 
 internal fun sanitizeHexInput(value: String, maxLength: Int): String =
@@ -8,7 +10,7 @@ internal fun sanitizeHexInput(value: String, maxLength: Int): String =
 internal fun isValidHexId(value: String, length: Int, requireNonZero: Boolean = false): Boolean =
     value.length == length && isHex(value) && (!requireNonZero || value.toULongOrNull(16) != 0uL)
 
-internal fun isValidNetworkId(value: String): Boolean = isValidHexId(value, 16)
+internal fun isValidNetworkId(value: String): Boolean = isValidNetworkProfileId(value)
 
 internal fun isValidMoonWorldId(value: String): Boolean = isValidHexId(value, 16, requireNonZero = true)
 

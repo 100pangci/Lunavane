@@ -3,8 +3,11 @@ package nova.lunavane.ui
 import nova.lunavane.NodeState
 import nova.lunavane.TunnelUiState
 import nova.lunavane.VirtualNetworkState
+import nova.lunavane.needsConnectionRetry
 import nova.lunavane.vpn.NetworkRecoveryPhase
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConnectionStatusTest {
@@ -52,6 +55,39 @@ class ConnectionStatusTest {
     fun `authorized network with ready transport is connected`() {
         val state = authorizedState()
         assertEquals(ConnectionStatus.CONNECTED, deriveConnectionStatus(state))
+    }
+
+    @Test
+    fun `user network switch remains switching until the target transport is ready`() {
+        val switching = authorizedState().copy(
+            switchingNetwork = true,
+            switchingToNetworkId = "bbbbbbbbbbbbbbbb",
+            recoveryPhase = NetworkRecoveryPhase.RECOVERING,
+        )
+
+        assertEquals(ConnectionStatus.SWITCHING_NETWORK, deriveConnectionStatus(switching))
+        assertEquals(
+            ConnectionStatus.RECOVERING,
+            deriveConnectionStatus(switching.copy(switchingNetwork = false, switchingToNetworkId = "")),
+        )
+        assertEquals(
+            ConnectionStatus.CONNECTED,
+            deriveConnectionStatus(
+                switching.copy(
+                    switchingNetwork = false,
+                    switchingToNetworkId = "",
+                    recoveryPhase = NetworkRecoveryPhase.READY,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `switching is visible while the old session is being stopped`() {
+        assertEquals(
+            ConnectionStatus.SWITCHING_NETWORK,
+            deriveConnectionStatus(TunnelUiState(switchingNetwork = true)),
+        )
     }
 
     @Test
@@ -111,6 +147,13 @@ class ConnectionStatusTest {
             ConnectionStatus.RECOVERING,
             deriveConnectionStatus(authorizedState().copy(status = "Offline")),
         )
+    }
+
+    @Test
+    fun `unhealthy active sessions allow a connection retry`() {
+        assertTrue(authorizedState(recoveryPhase = NetworkRecoveryPhase.EXHAUSTED).needsConnectionRetry())
+        assertTrue(authorizedState().copy(networkState = VirtualNetworkState.JOIN_FAILED).needsConnectionRetry())
+        assertFalse(authorizedState().needsConnectionRetry())
     }
 
     private fun authorizedState(
